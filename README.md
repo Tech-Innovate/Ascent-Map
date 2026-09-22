@@ -55,7 +55,7 @@ Observed fact
 
 A scraped value is evidence. A profile attribute is an interpretation. A service match is an evaluation against that profile. The layers remain separate and traceable.
 
-## V0.2 quick start
+## V0.3 quick start
 
 Requirements: Python 3.11+.
 
@@ -77,15 +77,56 @@ Individual stages are available as well:
 ascent-map init-db
 ascent-map ingest-maps path/to/results.json
 ascent-map enrich-web --max-pages 3
+ascent-map resolve-entities
 ascent-map evaluate
 ascent-map show
 ```
 
+`evaluate` always refreshes organization resolution before building profiles, so `resolve-entities` is optional and exists mainly for inspection/debugging.
+
+## V0.3 identity model
+
+Google Maps listings remain distinct source/business entities at ingestion. They are **not** destructively merged just because they share a website domain.
+
+Ascent Map then builds a separate organization layer using explicit evidence such as:
+
+- shared official domain;
+- normalized public phone overlap;
+- name similarity.
+
+High-confidence relationships become organization memberships. Weaker shared-domain/phone relationships remain `candidate` edges for human review instead of being force-merged.
+
+This gives the system a clean distinction:
+
+```text
+Organization
+    ├── Maps listing / branch A
+    ├── Maps listing / branch B
+    └── Maps listing / branch C
+```
+
+Profiles and service/channel evaluations are produced once per resolved organization while branch/source provenance remains intact.
+
+## V0.3 review intelligence
+
+When the Maps input contains `user_reviews` or `user_reviews_extended`, Ascent Map normalizes review content and can derive conservative business-level topic evidence for:
+
+- slow response / unanswered contacts;
+- booking difficulty;
+- waiting-time friction;
+- delivery problems.
+
+Those observations can support `responsiveness_gap`, `complaint_intensity`, and `customer_experience_gap`. They **do not** prove internal workflow facts such as `manual_process_indicator`; unsupported operational claims remain unknown.
+
+Reviewer names and profile/avatar URLs are intentionally excluded from the normalized review-intelligence tables. Raw source artifacts remain content-addressed for provenance.
+
+Review-topic evidence is temporal: historical topic summaries remain auditable, while only the latest derived topic state participates in current fact resolution.
+
+## Official website evidence
+
 Website enrichment is opt-in. It performs a small, bounded crawl of the canonical public website, respects applicable `robots.txt` path rules, stores fetched HTML under `.ascent-map/raw/web/`, and rejects localhost/private/link-local/reserved targets and unsafe redirects.
 
-## V0.2 website evidence
-
-The first website adapter can observe evidence for:
+The website adapter can observe evidence for:
 
 - WhatsApp, public email, phone, and contact forms;
 - booking/appointment flows;
@@ -97,6 +138,19 @@ The first website adapter can observe evidence for:
 - richer digital-maturity inputs.
 
 It does **not** infer missing capabilities as false. Absence on a crawled page normally remains unknown.
+
+## Pre-release V0.2 database note
+
+V0.3 corrects the pre-release identity model. V0.2 could derive a `business_id` directly from the website domain, which could collapse multiple listings before organization resolution existed.
+
+Because that lost distinction cannot be reconstructed reliably from the collapsed database alone, V0.2 local databases should be recreated and the raw Maps data re-ingested:
+
+```bash
+rm .ascent-map/ascent-map.duckdb   # Windows: remove the same file manually/PowerShell
+ascent-map run path/to/google-maps-results.json
+```
+
+Raw artifacts under `.ascent-map/raw/` do not need to be deleted.
 
 ## Repository layout
 
@@ -134,11 +188,11 @@ python domains/prospect-intelligence/tools/validate_config.py
 pytest -q
 ```
 
-GitHub Actions runs configuration validation, unit tests, the DuckDB Maps pipeline test, and deterministic official-website enrichment tests without calling the public Internet.
+GitHub Actions runs configuration validation plus unit and DuckDB integration tests. Website tests use deterministic fake fetchers and do not call the public Internet.
 
 ## Status
 
-V0.2 local Prospect Intelligence pipeline is under active bootstrap development.
+V0.3 local Prospect Intelligence pipeline is under active bootstrap development.
 
 ## License
 
