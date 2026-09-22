@@ -42,6 +42,24 @@ def _operator(left: Any, op: str, right: Any) -> bool:
     raise ValueError(f"Unsupported operator: {op}")
 
 
+def _compound_confidence(kind: str, state: str, children: list[dict[str, Any]]) -> float:
+    if not children or state == "unknown":
+        return 0.0
+    if kind == "any":
+        if state == "true":
+            relevant = [child for child in children if child["state"] == "true"]
+            return max((float(child.get("confidence", 0.0)) for child in relevant), default=0.0)
+        # Every branch must be false to conclude an OR is false. The weakest
+        # false branch bounds confidence in that conclusion.
+        return min((float(child.get("confidence", 0.0)) for child in children), default=0.0)
+    if state == "false":
+        # One confidently false branch is enough to falsify an AND.
+        relevant = [child for child in children if child["state"] == "false"]
+        return max((float(child.get("confidence", 0.0)) for child in relevant), default=0.0)
+    # Every branch must be true to conclude an AND is true.
+    return min((float(child.get("confidence", 0.0)) for child in children), default=0.0)
+
+
 def evaluate_rule(rule: dict[str, Any], facts: dict[str, Fact], signals: dict[str, SignalResult]) -> dict[str, Any]:
     if "any" in rule:
         children = [evaluate_rule(child, facts, signals) for child in rule["any"]]
@@ -51,7 +69,12 @@ def evaluate_rule(rule: dict[str, Any], facts: dict[str, Fact], signals: dict[st
             state = "unknown"
         else:
             state = "false"
-        return {"state": state, "kind": "any", "children": children, "confidence": max((c["confidence"] for c in children), default=0.0)}
+        return {
+            "state": state,
+            "kind": "any",
+            "children": children,
+            "confidence": _compound_confidence("any", state, children),
+        }
     if "all" in rule:
         children = [evaluate_rule(child, facts, signals) for child in rule["all"]]
         if any(child["state"] == "false" for child in children):
@@ -60,7 +83,12 @@ def evaluate_rule(rule: dict[str, Any], facts: dict[str, Fact], signals: dict[st
             state = "unknown"
         else:
             state = "true"
-        return {"state": state, "kind": "all", "children": children, "confidence": min((c["confidence"] for c in children), default=0.0)}
+        return {
+            "state": state,
+            "kind": "all",
+            "children": children,
+            "confidence": _compound_confidence("all", state, children),
+        }
 
     source_kind = "signal" if "signal" in rule else "fact"
     source_id = rule.get(source_kind)
@@ -77,19 +105,40 @@ def evaluate_rule(rule: dict[str, Any], facts: dict[str, Fact], signals: dict[st
     operator = rule.get("operator", "==")
     expected = rule.get("value")
     matched = _operator(_to_comparable(value, score), operator, _to_comparable(expected))
-    return {"state": "true" if matched else "false", "source": source_kind, "id": source_id,
-            "value": value, "score": score, "operator": operator, "expected": expected,
-            "confidence": confidence}
+    return {
+        "state": "true" if matched else "false",
+        "source": source_kind,
+        "id": source_id,
+        "value": value,
+        "score": score,
+        "operator": operator,
+        "expected": expected,
+        "confidence": confidence,
+    }
 
 
-def evaluate_match(subject: dict[str, Any], facts: dict[str, Fact], signals: dict[str, SignalResult],
-                   thresholds: dict[str, float] | None = None, min_coverage: float = 0.40) -> MatchResult:
+def evaluate_match(
+    subject: dict[str, Any],
+    facts: dict[str, Fact],
+    signals: dict[str, SignalResult],
+    thresholds: dict[str, float] | None = None,
+    min_coverage: float = 0.40,
+) -> MatchResult:
     subject_id = subject["id"]
     prerequisites = subject.get("prerequisites", []) or []
     prerequisite_trace = [evaluate_rule(rule, facts, signals) for rule in prerequisites]
-    if any(item["state"] == "false" for item in prerequisite_trace):
-        return MatchResult(subject_id, "ineligible", 0.0, 1.0, 1.0,
-                           limiting_factors=["hard prerequisite not met"], rule_trace=prerequisite_trace)
+    failed_prerequisites = [item for item in prerequisite_trace if item["state"] == "false"]
+    if failed_prerequisites:
+        confidence = max((float(item.get("confidence", 0.0)) for item in failed_prerequisites), default=0.0)
+        return MatchResult(
+            subject_id,
+            "ineligible",
+            0.0,
+            confidence,
+            1.0,
+            limiting_factors=["hard prerequisite not met"],
+            rule_trace=prerequisite_trace,
+        )
     prerequisite_unknown = bool(prerequisites and any(item["state"] == "unknown" for item in prerequisite_trace))
 
     positives = subject.get("positive_rules", []) or []
@@ -103,7 +152,7 @@ def evaluate_match(subject: dict[str, Any], facts: dict[str, Fact], signals: dic
         weight = float(rule.get("weight", 0.0))
         result["weight"] = weight
         trace.append(result)
-        source = str(rule.get("signal") or rule.get("fact"))
+        source = str(rule.get("signal") or rule.get("fact") or result.get("kind"))
         if result["state"] == "unknown":
             uncertainties.append(f"{source} unknown")
             continue
@@ -120,17 +169,33 @@ def evaluate_match(subject: dict[str, Any], facts: dict[str, Fact], signals: dic
     for rule in subject.get("limiting_rules", []) or []:
         result = evaluate_rule(rule, facts, signals)
         trace.append(result)
-        if result["state"] == "true" and score is not None:
+        source = str(rule.get("signal") or rule.get("fact") or result.get("kind"))
+        if result["state"] == "unknown":
+            uncertainties.append(f"{source} limiting evidence unknown")
+        elif result["state"] == "true" and score is not None:
             score = max(0.0, score - float(rule.get("penalty", 0.0)))
-            limiting_factors.append(str(rule.get("signal") or rule.get("fact")))
+            limiting_factors.append(source)
 
     if prerequisite_unknown or coverage < min_coverage or score is None:
         status = "insufficient_evidence"
     else:
         levels = thresholds or {"candidate": 0.50, "good_fit": 0.70, "strong_fit": 0.85}
-        if score >= levels.get("strong_fit", 0.85): status = "strong_fit"
-        elif score >= levels.get("good_fit", 0.70): status = "good_fit"
-        elif score >= levels.get("candidate", 0.50): status = "candidate"
-        else: status = "low_fit"
-    return MatchResult(subject_id, status, score, confidence, coverage,
-                       positive_factors, limiting_factors, uncertainties, trace)
+        if score >= levels.get("strong_fit", 0.85):
+            status = "strong_fit"
+        elif score >= levels.get("good_fit", 0.70):
+            status = "good_fit"
+        elif score >= levels.get("candidate", 0.50):
+            status = "candidate"
+        else:
+            status = "low_fit"
+    return MatchResult(
+        subject_id,
+        status,
+        score,
+        confidence,
+        coverage,
+        positive_factors,
+        limiting_factors,
+        uncertainties,
+        trace,
+    )
