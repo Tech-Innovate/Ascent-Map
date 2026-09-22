@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,10 +9,47 @@ from typing import Any
 from ascent_map.config import ProjectPaths, load_yaml
 from ascent_map.db import Database, decode_json, rows_as_dicts
 
+from .identity import organization_representatives, organization_scope, resolve_organizations
 from .ingest import json_value, parse_business, read_maps_records, stable_id, utc_now, value_type
-from .model import Fact, MatchResult, SignalResult
+from .model import Fact, SignalResult
+from .reviews import refresh_review_topic_evidence, store_reviews
 from .rules import evaluate_match
 from .signals import derive_signals
+
+BRANCH_LOCAL_PREFIXES = (
+    "location.",
+    "source.google_maps.",
+    "operations.open_hours",
+    "operations.popular_times",
+    "maps.reservations",
+    "maps.order_online",
+    "maps.menu",
+    "reputation.reviews_per_rating",
+)
+PRESENCE_PREDICATES = {
+    "digital.website_present",
+    "maps.phone_present",
+    "maps.reservations_present",
+    "maps.order_online_present",
+    "maps.menu_present",
+    "website.booking_present",
+    "website.ecommerce_present",
+    "website.checkout_present",
+    "website.customer_portal_present",
+    "website.language_switcher",
+    "digital.multilingual",
+    "digital.mobile_ready",
+    "organization.linkedin_company_page",
+}
+STATE_PREDICATES = {
+    "contact.phone.state",
+    "contact.email.state",
+    "contact.whatsapp.state",
+    "contact.form.state",
+    "contact.instagram.state",
+    "contact.facebook.state",
+    "contact.linkedin.state",
+}
 
 
 def quality_confidence(reliability: float, directness: float, extraction: float) -> float:
@@ -39,7 +76,7 @@ def ingest_maps(db: Database, paths: ProjectPaths, source: Path, collected_at: d
     if not raw_path.exists():
         raw_path.write_bytes(raw)
 
-    stats = {"records": 0, "businesses": 0, "evidence": 0}
+    stats = {"records": 0, "businesses": 0, "evidence": 0, "reviews": 0}
     seen_businesses: set[str] = set()
     with db.connect() as con:
         con.execute("BEGIN TRANSACTION")
@@ -99,6 +136,9 @@ def ingest_maps(db: Database, paths: ProjectPaths, source: Path, collected_at: d
                     )
                     if not existed:
                         stats["evidence"] += 1
+                stats["reviews"] += store_reviews(
+                    con, parsed.business_id, parsed.source_entity_id, artifact_id, record, collected
+                )
             con.execute("COMMIT")
         except Exception:
             con.execute("ROLLBACK")
@@ -124,20 +164,127 @@ def _write_fact(con, business_id: str, fact: Fact, method: str) -> None:
         """INSERT INTO resolved_fact
            (fact_id, business_id, predicate, resolved_value_json, state, confidence,
             resolution_method, rule_version, evidence_ids_json, valid_from)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'v0.1', ?, now())""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'v0.3', ?, now())""",
         [fact_id, business_id, fact.predicate, json_value(fact.value), fact.state,
          fact.confidence, method, json_value(fact.evidence_ids)],
     )
 
 
-def resolve_facts(con, business_id: str) -> dict[str, Fact]:
+def _dedupe_sources(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_source: dict[str, dict[str, Any]] = {}
+    for item in items:
+        source_key = str(item.get("source_entity_id") or item["evidence_id"])
+        current = by_source.get(source_key)
+        if current is None or (float(item["quality"]), item["collected_at"]) > (
+            float(current["quality"]), current["collected_at"]
+        ):
+            by_source[source_key] = item
+    return list(by_source.values())
+
+
+def _resolve_items(predicate: str, items: list[dict[str, Any]]) -> Fact:
+    if predicate in PRESENCE_PREDICATES:
+        positives = [item for item in items if item["value"] is True]
+        if positives:
+            chosen = _dedupe_sources(positives)
+            return Fact(predicate, True, "present",
+                        combined_group_confidence([float(item["quality"]) for item in chosen]),
+                        [item["evidence_id"] for item in chosen])
+    if predicate in STATE_PREDICATES:
+        positives = [item for item in items if item["value"] == "present"]
+        if positives:
+            chosen = _dedupe_sources(positives)
+            return Fact(predicate, "present", "present",
+                        combined_group_confidence([float(item["quality"]) for item in chosen]),
+                        [item["evidence_id"] for item in chosen])
+    if predicate.startswith("reviews.") and predicate.endswith("_topic"):
+        numeric = [item for item in items if isinstance(item["value"], (int, float))]
+        if numeric:
+            strongest = max(numeric, key=lambda item: (float(item["value"]), float(item["quality"])))
+            return Fact(predicate, float(strongest["value"]), "present", float(strongest["quality"]),
+                        [strongest["evidence_id"]])
+
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        groups[json_value(item["value"])].append(item)
+    ranked: list[tuple[float, list[dict[str, Any]]]] = []
+    for group in groups.values():
+        independent = _dedupe_sources(group)
+        ranked.append((combined_group_confidence([float(item["quality"]) for item in independent]), independent))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    top_confidence, top_items = ranked[0]
+    state = "conflicting" if len(ranked) > 1 and ranked[1][0] >= top_confidence - 0.08 else "present"
+    return Fact(predicate, top_items[0]["value"], state, top_confidence,
+                [item["evidence_id"] for item in top_items])
+
+
+def _aggregate_reputation(con, representative: str, members: list[str], facts: dict[str, Fact]) -> None:
+    placeholders = ",".join("?" for _ in members)
     rows = rows_as_dicts(con.execute(
-        """SELECT evidence_id, predicate, value_json, collected_at,
-                  source_reliability, directness, extraction_confidence
-           FROM evidence WHERE business_id = ? AND is_active = true
-           ORDER BY predicate, collected_at DESC""", [business_id]))
+        f"""SELECT business_id, predicate, value_json, evidence_id, source_entity_id, collected_at,
+                   source_reliability, directness, extraction_confidence
+            FROM evidence
+            WHERE business_id IN ({placeholders}) AND is_active = true
+              AND predicate IN ('reputation.review_count', 'reputation.review_rating')
+            ORDER BY business_id, predicate, collected_at DESC""",
+        members,
+    ))
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["business_id"], row["predicate"])
+        if key in latest:
+            continue
+        row["value"] = decode_json(row["value_json"])
+        row["quality"] = quality_confidence(float(row["source_reliability"] or 0),
+                                             float(row["directness"] or 0),
+                                             float(row["extraction_confidence"] or 0))
+        latest[key] = row
+
+    counts = {business_id: latest.get((business_id, "reputation.review_count")) for business_id in members}
+    known_counts = [row for row in counts.values() if row is not None]
+    if known_counts:
+        total = sum(max(0, int(row["value"] or 0)) for row in known_counts)
+        coverage = len(known_counts) / len(members)
+        confidence = (sum(float(row["quality"]) for row in known_counts) / len(known_counts)) * coverage
+        fact = Fact("reputation.review_count", total, "present", confidence,
+                    [row["evidence_id"] for row in known_counts])
+        facts[fact.predicate] = fact
+        _write_fact(con, representative, fact, "organization_aggregate_v0.3")
+
+    ratings = [latest.get((business_id, "reputation.review_rating")) for business_id in members]
+    known_ratings = [row for row in ratings if row is not None]
+    if known_ratings:
+        weighted_sum = weight_total = 0.0
+        for row in known_ratings:
+            count_row = counts.get(row["business_id"])
+            weight = max(1.0, float(count_row["value"])) if count_row else 1.0
+            weighted_sum += float(row["value"]) * weight
+            weight_total += weight
+        value = weighted_sum / weight_total
+        coverage = len(known_ratings) / len(members)
+        confidence = (sum(float(row["quality"]) for row in known_ratings) / len(known_ratings)) * coverage
+        fact = Fact("reputation.review_rating", value, "present", confidence,
+                    [row["evidence_id"] for row in known_ratings])
+        facts[fact.predicate] = fact
+        _write_fact(con, representative, fact, "organization_aggregate_v0.3")
+
+
+def resolve_facts(con, business_id: str) -> tuple[dict[str, Fact], str | None, list[str]]:
+    organization_id, representative, members = organization_scope(con, business_id)
+    placeholders = ",".join("?" for _ in members)
+    rows = rows_as_dicts(con.execute(
+        f"""SELECT evidence_id, business_id, source_entity_id, predicate, value_json, collected_at,
+                   source_reliability, directness, extraction_confidence
+            FROM evidence WHERE business_id IN ({placeholders}) AND is_active = true
+            ORDER BY predicate, collected_at DESC""",
+        members,
+    ))
     by_predicate: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
+        if len(members) > 1 and row["business_id"] != representative and row["predicate"].startswith(BRANCH_LOCAL_PREFIXES):
+            continue
+        if row["predicate"] in {"reputation.review_count", "reputation.review_rating", "organization.name", "organization.categories", "organization.category"}:
+            continue
         row["value"] = decode_json(row["value_json"])
         row["quality"] = quality_confidence(float(row["source_reliability"] or 0),
                                              float(row["directness"] or 0),
@@ -146,24 +293,62 @@ def resolve_facts(con, business_id: str) -> dict[str, Fact]:
 
     facts: dict[str, Fact] = {}
     for predicate, items in by_predicate.items():
-        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in items:
-            groups[json_value(item["value"])].append(item)
-        ranked = sorted(
-            ((combined_group_confidence([float(x["quality"]) for x in group]), group)
-             for group in groups.values()), key=lambda pair: pair[0], reverse=True)
-        top_confidence, top_items = ranked[0]
-        state = "conflicting" if len(ranked) > 1 and ranked[1][0] >= top_confidence - 0.08 else "present"
-        fact = Fact(predicate, top_items[0]["value"], state, top_confidence,
-                    [item["evidence_id"] for item in top_items])
+        fact = _resolve_items(predicate, items)
         facts[predicate] = fact
-        _write_fact(con, business_id, fact, "evidence_resolution_v0.1")
+        _write_fact(con, representative, fact, "evidence_resolution_v0.3")
 
-    count = int(con.execute("SELECT count(*) FROM location WHERE business_id = ?", [business_id]).fetchone()[0])
+    count = int(con.execute(
+        f"SELECT count(*) FROM location WHERE business_id IN ({placeholders})", members
+    ).fetchone()[0])
     location_fact = Fact("organization.location_count", count, "present", 1.0, [])
     facts[location_fact.predicate] = location_fact
-    _write_fact(con, business_id, location_fact, "database_aggregate")
-    return facts
+    _write_fact(con, representative, location_fact, "organization_aggregate_v0.3")
+
+    if organization_id:
+        org = con.execute(
+            "SELECT canonical_name, resolution_confidence FROM organization WHERE organization_id = ?",
+            [organization_id],
+        ).fetchone()
+        if org:
+            name_fact = Fact("organization.name", org[0], "present", float(org[1]), [])
+            facts[name_fact.predicate] = name_fact
+            _write_fact(con, representative, name_fact, "entity_resolution_v0.3")
+
+    category_rows = con.execute(
+        f"""SELECT value_json, evidence_id, source_reliability, directness, extraction_confidence
+            FROM evidence WHERE business_id IN ({placeholders}) AND is_active = true
+              AND predicate = 'organization.category' ORDER BY collected_at DESC""",
+        members,
+    ).fetchall()
+    if category_rows:
+        values = [str(decode_json(row[0])) for row in category_rows if decode_json(row[0])]
+        if values:
+            common, occurrences = Counter(values).most_common(1)[0]
+            quality = sum(quality_confidence(float(row[2] or 0), float(row[3] or 0), float(row[4] or 0)) for row in category_rows) / len(category_rows)
+            confidence = quality * (occurrences / len(values))
+            fact = Fact("organization.category", common, "present", confidence, [row[1] for row in category_rows if str(decode_json(row[0])) == common])
+            facts[fact.predicate] = fact
+            _write_fact(con, representative, fact, "organization_aggregate_v0.3")
+
+    categories_rows = con.execute(
+        f"""SELECT value_json, evidence_id FROM evidence WHERE business_id IN ({placeholders})
+            AND is_active = true AND predicate = 'organization.categories'""",
+        members,
+    ).fetchall()
+    categories: set[str] = set()
+    category_evidence: list[str] = []
+    for value_json, evidence_id in categories_rows:
+        value = decode_json(value_json)
+        if isinstance(value, list):
+            categories.update(str(item) for item in value if item)
+            category_evidence.append(evidence_id)
+    if categories:
+        fact = Fact("organization.categories", sorted(categories), "present", 0.90, category_evidence)
+        facts[fact.predicate] = fact
+        _write_fact(con, representative, fact, "organization_aggregate_v0.3")
+
+    _aggregate_reputation(con, representative, members, facts)
+    return facts, organization_id, members
 
 
 def _store_signal(con, business_id: str, signal: SignalResult) -> None:
@@ -172,16 +357,20 @@ def _store_signal(con, business_id: str, signal: SignalResult) -> None:
         """INSERT INTO signal_fact
            (signal_fact_id, business_id, signal_id, value_json, score, confidence, state,
             method_type, method_id, method_version, evidence_ids_json, explanation_json, evaluated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'rule', ?, 'v0.1', ?, ?, now())""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'rule', ?, 'v0.3', ?, ?, now())""",
         [signal_fact_id, business_id, signal.signal_id, json_value(signal.value), signal.score,
          signal.confidence, signal.state, f"baseline:{signal.signal_id}",
          json_value(signal.evidence_ids), json_value(signal.reasons)],
     )
 
 
-def _profile(name: str, facts: dict[str, Fact], signals: dict[str, SignalResult], completeness: float, contradictions: int) -> dict[str, Any]:
+def _profile(name: str, organization_id: str | None, members: list[str], facts: dict[str, Fact], signals: dict[str, SignalResult], completeness: float, contradictions: int) -> dict[str, Any]:
     return {
-        "identity": {"name": name},
+        "identity": {
+            "name": name,
+            "organization_id": organization_id,
+            "member_business_ids": members,
+        },
         "facts": {key: {"value": fact.value, "state": fact.state, "confidence": round(fact.confidence, 4)}
                   for key, fact in sorted(facts.items())},
         "signals": {key: {"value": signal.value, "score": None if signal.score is None else round(signal.score, 4),
@@ -203,26 +392,28 @@ def evaluate_business(db: Database, paths: ProjectPaths, business_id: str) -> di
     with db.connect() as con:
         con.execute("BEGIN TRANSACTION")
         try:
-            business = con.execute("SELECT canonical_name FROM business WHERE business_id = ?", [business_id]).fetchone()
+            organization_id, representative, members = organization_scope(con, business_id)
+            business = con.execute("SELECT canonical_name FROM business WHERE business_id = ?", [representative]).fetchone()
             if not business:
                 raise KeyError(f"Unknown business_id: {business_id}")
-            facts = resolve_facts(con, business_id)
+            facts, organization_id, members = resolve_facts(con, representative)
             signals = derive_signals(facts, signal_defs)
             for signal in signals.values():
-                _store_signal(con, business_id, signal)
+                _store_signal(con, representative, signal)
 
             completeness = sum(1 for signal in signals.values() if signal.known) / len(signal_defs) if signal_defs else 0.0
             contradictions = sum(1 for fact in facts.values() if fact.state == "conflicting")
             version = int(con.execute("SELECT coalesce(max(profile_version), 0) + 1 FROM profile_snapshot WHERE business_id = ?",
-                                      [business_id]).fetchone()[0])
-            profile_id = stable_id("prof", business_id, version)
-            profile = _profile(business[0], facts, signals, completeness, contradictions)
+                                      [representative]).fetchone()[0])
+            profile_id = stable_id("prof", representative, version)
+            display_name = facts.get("organization.name", Fact("organization.name", business[0], "present", 1.0)).value
+            profile = _profile(str(display_name), organization_id, members, facts, signals, completeness, contradictions)
             con.execute(
                 """INSERT INTO profile_snapshot
                    (profile_id, business_id, profile_version, as_of, profile_json, completeness,
                     freshness, contradiction_count)
                    VALUES (?, ?, ?, now(), ?, ?, 1.0, ?)""",
-                [profile_id, business_id, version, json_value(profile), completeness, contradictions],
+                [profile_id, representative, version, json_value(profile), completeness, contradictions],
             )
 
             for service in services:
@@ -240,7 +431,7 @@ def evaluate_business(db: Database, paths: ProjectPaths, business_id: str) -> di
                         eligible, status, fit_score, evidence_confidence, positive_factors_json,
                         limiting_factors_json, uncertainties_json, rule_trace_json, evaluated_at)
                        VALUES (?, ?, ?, ?, '1', ?, ?, ?, ?, ?, ?, ?, ?, now())""",
-                    [stable_id("sm", profile_id, service["id"]), business_id, profile_id, service["id"],
+                    [stable_id("sm", profile_id, service["id"]), representative, profile_id, service["id"],
                      result.status != "ineligible", result.status, result.score, result.evidence_confidence,
                      json_value(result.positive_factors), json_value(result.limiting_factors),
                      json_value(result.uncertainties), json_value(result.rule_trace)],
@@ -261,7 +452,7 @@ def evaluate_business(db: Database, paths: ProjectPaths, business_id: str) -> di
                         evidence_confidence, positive_factors_json, cautions_json, rule_trace_json,
                         requires_human_review, evaluated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())""",
-                    [stable_id("cm", profile_id, channel["id"]), business_id, profile_id, channel["id"],
+                    [stable_id("cm", profile_id, channel["id"]), representative, profile_id, channel["id"],
                      result.score, result.evidence_confidence, json_value(result.positive_factors),
                      json_value(channel.get("cautions", [])), json_value(result.rule_trace),
                      bool(channel_cfg.get("require_human_review", True))],
@@ -270,10 +461,23 @@ def evaluate_business(db: Database, paths: ProjectPaths, business_id: str) -> di
         except Exception:
             con.execute("ROLLBACK")
             raise
-    return {"business_id": business_id, "profile_id": profile_id, "profile_version": version}
+    return {"business_id": representative, "organization_id": organization_id, "profile_id": profile_id, "profile_version": version}
 
 
 def evaluate_all(db: Database, paths: ProjectPaths, business_id: str | None = None) -> list[dict[str, Any]]:
+    resolve_organizations(db)
     with db.connect() as con:
-        ids = [business_id] if business_id else [row[0] for row in con.execute("SELECT business_id FROM business ORDER BY canonical_name").fetchall()]
+        all_business_ids = [row[0] for row in con.execute("SELECT business_id FROM business").fetchall()]
+        con.execute("BEGIN TRANSACTION")
+        try:
+            refresh_review_topic_evidence(con, all_business_ids, utc_now())
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        if business_id:
+            _, representative, _ = organization_scope(con, business_id)
+            ids = [representative]
+        else:
+            ids = organization_representatives(con)
     return [evaluate_business(db, paths, item) for item in ids if item]
