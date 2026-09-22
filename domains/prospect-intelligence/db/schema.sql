@@ -279,3 +279,79 @@ CREATE TABLE IF NOT EXISTS pipeline_task (
     last_error            VARCHAR,
     CHECK(status IN ('pending','running','completed','failed','cancelled'))
 );
+
+-- V0.3 organization resolution keeps source listings distinct. Organizations
+-- are derived, reviewable groupings rather than destructive identity merges.
+CREATE TABLE IF NOT EXISTS organization (
+    organization_id              VARCHAR PRIMARY KEY,
+    canonical_name               VARCHAR NOT NULL,
+    normalized_name              VARCHAR,
+    representative_business_id   VARCHAR NOT NULL REFERENCES business(business_id),
+    resolution_confidence        DOUBLE NOT NULL CHECK(resolution_confidence BETWEEN 0 AND 1),
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS organization_member (
+    business_id            VARCHAR PRIMARY KEY REFERENCES business(business_id),
+    organization_id        VARCHAR NOT NULL REFERENCES organization(organization_id),
+    relation               VARCHAR NOT NULL DEFAULT 'listing',
+    confidence             DOUBLE NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+    reasons_json           JSON NOT NULL,
+    linked_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_organization_member_org
+    ON organization_member(organization_id);
+
+CREATE TABLE IF NOT EXISTS entity_resolution_edge (
+    edge_id                VARCHAR PRIMARY KEY,
+    left_business_id       VARCHAR NOT NULL REFERENCES business(business_id),
+    right_business_id      VARCHAR NOT NULL REFERENCES business(business_id),
+    score                  DOUBLE NOT NULL CHECK(score BETWEEN 0 AND 1),
+    decision               VARCHAR NOT NULL,
+    reasons_json           JSON NOT NULL,
+    evaluated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK(decision IN ('linked','candidate','rejected')),
+    UNIQUE(left_business_id, right_business_id)
+);
+
+-- Review normalization intentionally omits reviewer names/profile URLs. The
+-- immutable raw Maps artifact remains available for provenance, while the
+-- intelligence layer retains only content required for business-level analysis.
+CREATE TABLE IF NOT EXISTS review_observation (
+    review_observation_id  VARCHAR PRIMARY KEY,
+    business_id            VARCHAR NOT NULL REFERENCES business(business_id),
+    source_entity_id       VARCHAR REFERENCES source_entity(source_entity_id),
+    artifact_id            VARCHAR REFERENCES raw_artifact(artifact_id),
+    external_review_id     VARCHAR,
+    source_field           VARCHAR NOT NULL,
+    rating                 DOUBLE,
+    text                   VARCHAR,
+    language               VARCHAR,
+    published_at           TIMESTAMPTZ,
+    published_label        VARCHAR,
+    has_owner_reply        BOOLEAN NOT NULL DEFAULT false,
+    content_sha256         VARCHAR NOT NULL,
+    collected_at           TIMESTAMPTZ NOT NULL,
+    UNIQUE(business_id, content_sha256)
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_observation_business
+    ON review_observation(business_id, collected_at);
+
+CREATE TABLE IF NOT EXISTS review_topic_summary (
+    summary_id             VARCHAR PRIMARY KEY,
+    business_id            VARCHAR NOT NULL REFERENCES business(business_id),
+    topic_id               VARCHAR NOT NULL,
+    score                  DOUBLE NOT NULL CHECK(score BETWEEN 0 AND 1),
+    confidence             DOUBLE NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+    sample_size            INTEGER NOT NULL,
+    matched_count          INTEGER NOT NULL,
+    review_ids_json        JSON NOT NULL,
+    rule_version           VARCHAR NOT NULL,
+    evaluated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_topic_business
+    ON review_topic_summary(business_id, topic_id, evaluated_at);
