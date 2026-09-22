@@ -5,7 +5,6 @@ from typing import Any
 
 from .model import Fact, SignalResult
 
-
 ORDINAL = {"very_low": 0.10, "low": 0.30, "medium": 0.50, "high": 0.75, "very_high": 0.95}
 CONSUMER = ("restaurant", "cafe", "clinic", "medical", "dental", "salon", "spa", "barber", "hotel", "gym", "pharmacy", "shop", "store", "school", "veterinary", "workshop")
 B2B = ("consult", "software", "manufacturer", "wholesale", "logistics", "industrial", "contractor", "engineering", "accounting", "supplier", "distribution", "freight")
@@ -34,10 +33,12 @@ def combined_confidence(*values: float) -> float:
     return clamp(1.0 - miss)
 
 
-def evidence_ids(*items: Fact | SignalResult) -> list[str]:
+def evidence_ids(*items: Fact | SignalResult | None) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for item in items:
+        if item is None:
+            continue
         for evidence_id in item.evidence_ids:
             if evidence_id not in seen:
                 seen.add(evidence_id)
@@ -177,12 +178,18 @@ def derive_signals(facts: dict[str, Fact], signal_definitions: list[dict[str, An
     explicit_unknowns = {
         "responsiveness_gap": "review-topic analysis not yet implemented",
         "manual_process_indicator": "current sources cannot prove a workflow is manual",
-        "social_messaging_presence": "social-channel enrichment not yet implemented",
-        "contact_form_presence": "website form enrichment not yet implemented",
+        "social_messaging_presence": "social-channel enrichment not yet observed",
+        "contact_form_presence": "website form enrichment not yet observed",
     }
     for signal_id, reason in explicit_unknowns.items():
         ctx.signals.setdefault(signal_id, unknown(signal_id, reason))
+
+    # Lazy import avoids a module cycle while allowing website-derived facts to
+    # strengthen the same canonical signal set used by every downstream rule.
+    from .web_signals import augment_web_signals
+    augment_web_signals(facts, ctx.signals)
+
     for definition in signal_definitions:
         signal_id = definition["id"]
-        ctx.signals.setdefault(signal_id, unknown(signal_id, "no V0.1 evaluator implemented"))
+        ctx.signals.setdefault(signal_id, unknown(signal_id, "no evaluator implemented for available evidence"))
     return ctx.signals
