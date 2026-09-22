@@ -22,9 +22,9 @@ Human-reviewed decision support
 
 Acquisition tools are adapters. They do not own business truth or commercial decisions.
 
-## V0.1 local executable
+## V0.2 local executable
 
-The repository now contains a runnable Python pipeline backed by DuckDB.
+The repository contains a runnable Python pipeline backed by DuckDB.
 
 ```bash
 python -m venv .venv
@@ -33,34 +33,90 @@ python -m pip install -e '.[dev]'
 
 ascent-map init-db
 ascent-map ingest-maps path/to/maps-results.json
+ascent-map enrich-web --max-pages 3
 ascent-map evaluate
 ascent-map show
 ```
 
-Or run the complete local path in one command:
+For a Maps-only path with no website network acquisition:
 
 ```bash
 ascent-map run path/to/maps-results.json
 ```
 
-Use `--json` with `show` or `run` for a machine-readable report.
+For Maps plus explicit official-website enrichment:
 
-The default database and immutable raw-artifact store live under `.ascent-map/`, which is intentionally excluded from Git.
+```bash
+ascent-map run path/to/maps-results.json --enrich-web --max-pages 3
+```
 
-## What V0.1 does
+Use `--json` with `show` or `run` for a machine-readable report. The default database and immutable raw-artifact store live under `.ascent-map/`, which is intentionally excluded from Git.
+
+## What V0.2 does
 
 1. Accepts `gosom/google-maps-scraper` JSON arrays, single JSON objects, or JSONL.
-2. Copies the source payload into a content-addressed local raw-artifact store.
+2. Copies the Maps source payload into a content-addressed local raw-artifact store.
 3. Resolves stable business, location, and source identities.
-4. Converts source fields into canonical evidence predicates.
-5. Resolves current facts while retaining contradictory observations.
-6. Derives Maps-supported baseline signals.
-7. Creates an immutable, versioned profile snapshot.
-8. Evaluates the configured service portfolio.
-9. Evaluates communication channels independently of service fit.
-10. Produces an explainable local report with fit and evidence confidence kept separate.
+4. Converts Maps fields into canonical evidence predicates.
+5. Optionally performs a bounded crawl of the canonical official website.
+6. Preserves fetched HTML as content-addressed evidence under `.ascent-map/raw/web/`.
+7. Extracts observable website facts for contact channels, booking, ecommerce, portals, social links, language support, HTTPS, and mobile readiness.
+8. Resolves current facts while retaining contradictory observations.
+9. Derives Maps- and website-supported profile signals.
+10. Creates immutable, versioned profile snapshots.
+11. Evaluates the configured service portfolio.
+12. Evaluates communication channels independently of service fit.
+13. Produces an explainable local report with fit, evidence coverage, and evidence confidence kept separate.
 
-V0.1 intentionally leaves website-only, social, review-topic, and manual-process signals as `unknown` until those enrichment adapters exist.
+Review-topic interpretation and manual-process claims remain `unknown` until dedicated evidence exists.
+
+## Website acquisition boundaries
+
+Website enrichment is explicit, bounded, and public-site-only.
+
+- Default maximum: 3 pages per official website.
+- Crawl candidates are restricted to the same normalized hostname.
+- `robots.txt` allow/disallow path rules are respected when retrievable.
+- Localhost, private, link-local, reserved, and other non-public IP targets are rejected.
+- Credential-bearing URLs and non-HTTP(S) schemes are rejected.
+- Redirect targets are validated before following.
+- Response size is bounded.
+- Identical predicate/value observations from multiple pages of the same website are deduplicated at the source-entity level.
+
+The adapter generally records positive observations. A feature not seen on the sampled pages remains `unknown`; it is not silently converted to `false`.
+
+## Website-derived evidence and signals
+
+Current observations include:
+
+- `contact.whatsapp.*`
+- `contact.email.*`
+- `contact.phone.*`
+- `contact.form.state`
+- `contact.instagram.*`
+- `contact.facebook.*`
+- `contact.linkedin.*`
+- `website.booking_present`
+- `website.ecommerce_present`
+- `website.checkout_present`
+- `website.customer_portal_present`
+- `website.languages`
+- `digital.https`
+- `digital.mobile_ready`
+- `digital.multilingual`
+
+Those facts can strengthen canonical signals such as:
+
+- `whatsapp_presence`
+- `contact_form_presence`
+- `social_messaging_presence`
+- `appointment_driven`
+- `online_booking`
+- `transaction_driven`
+- `ecommerce_capability`
+- `customer_portal`
+- `multilingual_digital_presence`
+- `digital_maturity`
 
 ## Domain files
 
@@ -107,6 +163,7 @@ Hard prerequisites can mark an organization `ineligible`; insufficient evidence 
 
 ## Implementation rules
 
+- Acquisition adapters create evidence, not service recommendations.
 - The service evaluator must not create facts.
 - The profile builder must not alter raw evidence.
 - LLM-derived observations must retain evidence references and confidence.
@@ -123,4 +180,4 @@ python domains/prospect-intelligence/tools/validate_config.py
 pytest -q
 ```
 
-GitHub Actions runs both checks, including the DuckDB end-to-end pipeline test.
+GitHub Actions runs both checks, including deterministic DuckDB Maps and website-enrichment integration tests.
