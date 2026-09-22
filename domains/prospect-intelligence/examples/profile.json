@@ -1,0 +1,80 @@
+{
+  "profile_id": "prof_example_001",
+  "business_id": "biz_example_001",
+  "profile_version": 1,
+  "as_of": "2026-09-22T10:40:00+03:00",
+  "identity": {
+    "name": "Example Medical Center",
+    "categories": [
+      "medical_center",
+      "dental_clinic"
+    ]
+  },
+  "footprint": {
+    "locations": {
+      "value": 3,
+      "confidence": 0.82
+    }
+  },
+  "market": {
+    "b2c_orientation": {
+      "score": 0.91,
+      "confidence": 0.91
+    }
+  },
+  "customer_model": {
+    "interaction_intensity": {
+      "value": "very_high",
+      "score": 0.93,
+      "confidence": 0.89
+    },
+    "appointment_driven": {
+      "value": true,
+      "score": 0.95,
+      "confidence": 0.94
+    }
+  },
+  "digital": {
+    "maturity": {
+      "value": "medium",
+      "score": 0.61,
+      "confidence": 0.82
+    },
+    "online_booking": {
+      "value": true,
+      "confidence": 0.96
+    }
+  },
+  "communication": {
+    "whatsapp": {
+      "state": "present",
+      "confidence": 0.98
+    },
+    "email": {
+      "state": "present",
+      "confidence": 0.87
+    },
+    "phone": {
+      "state": "present",
+      "confidence": 0.99
+    }
+  },
+  "operations": {
+    "complexity": {
+      "value": "high",
+      "score": 0.76,
+      "confidence": 0.63
+    }
+  },
+  "opportunity_signals": {
+    "responsiveness_gap": {
+      "score": 0.72,
+      "confidence": 0.69
+    }
+  },
+  "data_quality": {
+    "completeness": 0.78,
+    "freshness": 0.95,
+    "contradictions": 1
+  }
+}

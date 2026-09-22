@@ -1,0 +1,193 @@
+version: 1
+
+channels:
+  - id: whatsapp
+    name: WhatsApp
+    enabled: true
+    intent:
+      - initial_contact
+      - short_follow_up
+      - appointment_coordination
+    positive_rules:
+      - fact: contact.whatsapp.state
+        operator: "=="
+        value: present
+        weight: 0.40
+      - fact: website.whatsapp_prominence
+        operator: ">="
+        value: 0.50
+        weight: 0.20
+      - signal: b2c_orientation
+        operator: ">="
+        value: 0.50
+        weight: 0.15
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: medium
+        weight: 0.10
+      - fact: contact.whatsapp.purpose.customer_support
+        operator: in
+        value: [likely, confirmed]
+        weight: 0.15
+    cautions:
+      - Public customer-service WhatsApp does not imply suitability for procurement or executive outreach.
+      - Require human review before initial outreach.
+      - Respect applicable messaging, privacy and marketing rules.
+
+  - id: phone
+    name: Phone
+    enabled: true
+    intent:
+      - initial_contact
+      - clarification
+      - qualification
+    positive_rules:
+      - fact: contact.phone.state
+        operator: "=="
+        value: present
+        weight: 0.45
+      - signal: phone_reliance
+        operator: ">="
+        value: 0.50
+        weight: 0.25
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: medium
+        weight: 0.10
+      - fact: website.phone_prominence
+        operator: ">="
+        value: 0.50
+        weight: 0.20
+    cautions:
+      - Public switchboard numbers may not reach a decision maker.
+      - Prefer role-appropriate routing where available.
+
+  - id: email
+    name: Email
+    enabled: true
+    intent:
+      - initial_contact
+      - detailed_proposal
+      - technical_follow_up
+      - procurement
+    positive_rules:
+      - fact: contact.email.state
+        operator: "=="
+        value: present
+        weight: 0.45
+      - signal: b2b_orientation
+        operator: ">="
+        value: 0.50
+        weight: 0.20
+      - signal: email_reliance
+        operator: ">="
+        value: 0.50
+        weight: 0.20
+      - fact: contact.email.domain_matches_website
+        operator: "=="
+        value: true
+        weight: 0.15
+    cautions:
+      - Generic inboxes may have poor decision-maker reach.
+      - Validate address provenance before use.
+
+  - id: website_form
+    name: Website Contact Form
+    enabled: true
+    intent:
+      - initial_contact
+      - general_enquiry
+    positive_rules:
+      - fact: contact.form.state
+        operator: "=="
+        value: present
+        weight: 0.55
+      - fact: website.form.purpose.sales
+        operator: in
+        value: [likely, confirmed]
+        weight: 0.25
+      - fact: website.form.purpose.general_enquiry
+        operator: in
+        value: [likely, confirmed]
+        weight: 0.20
+    cautions:
+      - Submission tracking may be limited.
+      - Forms may route to customer support rather than commercial teams.
+
+  - id: linkedin
+    name: LinkedIn
+    enabled: true
+    intent:
+      - stakeholder_discovery
+      - b2b_initial_contact
+      - executive_contact
+    positive_rules:
+      - signal: b2b_orientation
+        operator: ">="
+        value: 0.50
+        weight: 0.30
+      - fact: contact.linkedin.state
+        operator: "=="
+        value: present
+        weight: 0.30
+      - fact: organization.linkedin_company_page
+        operator: "=="
+        value: true
+        weight: 0.20
+      - fact: organization.decision_maker_roles_identified
+        operator: "=="
+        value: true
+        weight: 0.20
+    cautions:
+      - Individual targeting requires stronger identity and role evidence.
+      - Keep stakeholder inference separate from verified identity.
+
+  - id: instagram
+    name: Instagram
+    enabled: true
+    intent:
+      - brand_contact
+      - consumer_facing_follow_up
+    positive_rules:
+      - fact: contact.instagram.state
+        operator: "=="
+        value: present
+        weight: 0.45
+      - signal: b2c_orientation
+        operator: ">="
+        value: 0.60
+        weight: 0.25
+      - fact: website.instagram_prominence
+        operator: ">="
+        value: 0.50
+        weight: 0.15
+      - signal: social_messaging_presence
+        operator: ">="
+        value: 0.50
+        weight: 0.15
+    cautions:
+      - Social inboxes are often marketing/customer-care channels rather than procurement channels.
+
+selection:
+  min_suitability: 0.45
+  strong_suitability: 0.75
+  confidence_floor: 0.50
+  require_human_review: true
+
+  purpose_classes:
+    customer_channel:
+      - whatsapp
+      - phone
+      - instagram
+      - website_form
+    corporate_channel:
+      - email
+      - linkedin
+      - phone
+    executive_channel:
+      - linkedin
+      - email
+
+  notes:
+    - Select channel and service independently.
+    - Prefer an appropriate purpose class over the numerically highest channel when contacting a commercial decision maker.

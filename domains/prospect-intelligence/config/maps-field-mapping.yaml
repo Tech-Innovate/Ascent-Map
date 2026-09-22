@@ -1,0 +1,42 @@
+version: 1
+source: gosom_google_maps_scraper
+
+mappings:
+  input_id: source.input_id
+  title: organization.name
+  category: organization.category
+  categories: organization.categories
+  link: source.google_maps.url
+  cid: source.google_maps.cid
+  place_id: source.google_maps.place_id
+  address: location.address_text
+  complete_address.street: location.street
+  complete_address.city: location.city
+  complete_address.state: location.region
+  complete_address.postal_code: location.postal_code
+  complete_address.country: location.country
+  latitude: location.latitude
+  longitude: location.longitude
+  longtitude: location.longitude
+  phone: contact.phone.value
+  web_site: digital.website.url
+  website: digital.website.url
+  emails: contact.email.values
+  review_count: reputation.review_count
+  review_rating: reputation.review_rating
+  reviews_per_rating: reputation.reviews_per_rating
+  open_hours: operations.open_hours
+  popular_times: operations.popular_times
+  status: organization.status
+  price_range: commercial.price_range
+  reservations: maps.reservations
+  order_online: maps.order_online
+  menu: maps.menu
+  owner: maps.owner
+  about: maps.about
+  user_reviews: reviews.inline
+  user_reviews_extended: reviews.extended
+  thumbnail: media.thumbnail
+  images: media.images
+  street_view_url: media.street_view_url
+  timezone: location.timezone

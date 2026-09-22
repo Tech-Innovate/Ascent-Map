@@ -1,0 +1,351 @@
+version: 1
+value_scales:
+  ordinal_5:
+    values:
+    - very_low
+    - low
+    - medium
+    - high
+    - very_high
+    numeric:
+      very_low: 0.1
+      low: 0.3
+      medium: 0.5
+      high: 0.75
+      very_high: 0.95
+  evidence_state:
+    values:
+    - present
+    - absent
+    - unknown
+    - conflicting
+    - not_applicable
+signals:
+- id: organization_size
+  domain: organization
+  type: ordinal
+  scale: ordinal_5
+  description: Estimated organizational scale based on public operating footprint.
+  default_state: unknown
+  freshness_days: 180
+  inputs:
+  - organization.location_count
+  - reputation.review_count
+  - website.team_size_indicator
+  - website.careers_activity
+  rule:
+    strategy: weighted_bands
+    notes: Do not infer employee count directly unless explicitly observed.
+- id: multi_location
+  domain: organization
+  type: boolean
+  description: Whether the organization operates more than one location.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - organization.location_count
+  - website.locations_count
+  rule:
+    strategy: threshold
+    expression: max(organization.location_count, website.locations_count) >= 2
+- id: chain_indicator
+  domain: organization
+  type: score
+  description: Likelihood that the organization is part of a chain or multi-branch brand.
+  default_state: unknown
+  freshness_days: 180
+  inputs:
+  - organization.location_count
+  - website.locations_count
+  - website.brand_consistency
+  - organization.name_similarity_across_locations
+- id: b2b_orientation
+  domain: market
+  type: score
+  description: Degree to which the organization appears to sell primarily to businesses.
+  default_state: unknown
+  freshness_days: 180
+  inputs:
+  - website.customer_language
+  - website.service_catalog
+  - organization.category
+- id: b2c_orientation
+  domain: market
+  type: score
+  description: Degree to which the organization appears to serve consumers directly.
+  default_state: unknown
+  freshness_days: 180
+  inputs:
+  - organization.category
+  - reputation.review_count
+  - website.booking_present
+  - website.ordering_present
+- id: customer_interaction_intensity
+  domain: customer
+  type: ordinal
+  scale: ordinal_5
+  description: Expected volume and frequency of direct customer interactions.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - reputation.review_count
+  - reputation.review_velocity
+  - website.booking_present
+  - website.ordering_present
+  - contact.whatsapp.state
+  - operations.extended_hours
+- id: appointment_driven
+  domain: customer
+  type: boolean
+  description: Whether appointments are central to the operating model.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - website.booking_present
+  - website.appointment_language
+  - organization.category
+- id: transaction_driven
+  domain: customer
+  type: boolean
+  description: Whether direct purchase or order transactions are central to the customer journey.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - website.ecommerce_present
+  - website.ordering_present
+  - maps.order_online_present
+  - maps.menu_present
+- id: repeat_customer_dependency
+  domain: customer
+  type: score
+  description: Estimated dependency on recurring or returning customers.
+  default_state: unknown
+  freshness_days: 180
+  inputs:
+  - organization.category
+  - website.membership_present
+  - website.subscription_present
+  - reputation.review_velocity
+- id: digital_maturity
+  domain: digital
+  type: ordinal
+  scale: ordinal_5
+  description: Overall observable digital operating maturity.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - digital.website_present
+  - digital.https
+  - digital.mobile_ready
+  - website.booking_present
+  - website.ecommerce_present
+  - website.customer_portal_present
+  - contact.whatsapp.state
+  - contact.form.state
+  - digital.multilingual
+- id: ecommerce_capability
+  domain: digital
+  type: boolean
+  description: Presence of public ecommerce or transactional checkout capability.
+  default_state: unknown
+  freshness_days: 60
+  inputs:
+  - website.ecommerce_present
+  - website.checkout_present
+  - maps.order_online_present
+- id: online_booking
+  domain: digital
+  type: boolean
+  description: Presence of online booking or appointment scheduling.
+  default_state: unknown
+  freshness_days: 60
+  inputs:
+  - website.booking_present
+  - maps.reservations_present
+- id: customer_portal
+  domain: digital
+  type: boolean
+  description: Presence of authenticated customer or patient portal capability.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - website.customer_portal_present
+- id: multilingual_digital_presence
+  domain: digital
+  type: score
+  description: Observable support for multiple customer-facing languages.
+  default_state: unknown
+  freshness_days: 180
+  inputs:
+  - website.languages
+  - website.language_switcher
+  - maps.language_variants
+- id: whatsapp_presence
+  domain: communication
+  type: state
+  scale: evidence_state
+  description: Publicly observable WhatsApp contact capability.
+  default_state: unknown
+  freshness_days: 45
+  inputs:
+  - contact.whatsapp.state
+  - website.whatsapp_link
+- id: phone_reliance
+  domain: communication
+  type: score
+  description: Degree to which phone appears to be an important public customer channel.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - contact.phone.state
+  - website.phone_prominence
+  - maps.phone_present
+- id: email_reliance
+  domain: communication
+  type: score
+  description: Degree to which email appears to be a meaningful public business channel.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - contact.email.state
+  - website.email_prominence
+  - website.b2b_language
+- id: social_messaging_presence
+  domain: communication
+  type: score
+  description: Observable use of social platforms as customer contact channels.
+  default_state: unknown
+  freshness_days: 60
+  inputs:
+  - website.social_links
+  - contact.instagram.state
+  - contact.facebook.state
+- id: contact_form_presence
+  domain: communication
+  type: state
+  scale: evidence_state
+  description: Presence of a public website contact or enquiry form.
+  default_state: unknown
+  freshness_days: 60
+  inputs:
+  - contact.form.state
+- id: operational_complexity
+  domain: operations
+  type: ordinal
+  scale: ordinal_5
+  description: Observable operational coordination complexity.
+  default_state: unknown
+  freshness_days: 120
+  inputs:
+  - organization.location_count
+  - operations.extended_hours
+  - operations.delivery_present
+  - website.booking_present
+  - website.ordering_present
+  - customer_interaction_intensity
+- id: extended_hours
+  domain: operations
+  type: boolean
+  description: Whether the organization operates unusually long hours or seven days.
+  default_state: unknown
+  freshness_days: 45
+  inputs:
+  - maps.open_hours
+- id: delivery_operations
+  domain: operations
+  type: boolean
+  description: Whether delivery appears to be part of operations.
+  default_state: unknown
+  freshness_days: 60
+  inputs:
+  - maps.order_online_present
+  - website.delivery_present
+- id: reputation_strength
+  domain: reputation
+  type: score
+  description: Composite public reputation signal.
+  default_state: unknown
+  freshness_days: 45
+  inputs:
+  - reputation.review_rating
+  - reputation.review_count
+  - reputation.review_velocity
+- id: review_activity
+  domain: reputation
+  type: score
+  description: Current level of public review activity.
+  default_state: unknown
+  freshness_days: 30
+  inputs:
+  - reputation.review_count
+  - reputation.review_velocity
+  - reputation.review_recency
+- id: complaint_intensity
+  domain: reputation
+  type: score
+  description: Strength of recurring customer-friction themes observed in the normalized review sample.
+  default_state: unknown
+  freshness_days: 45
+  inputs:
+  - reviews.slow_response_topic
+  - reviews.unanswered_topic
+  - reviews.booking_difficulty_topic
+  - reviews.wait_time_topic
+  - reviews.delivery_problem_topic
+- id: responsiveness_gap
+  domain: opportunity
+  type: score
+  description: Evidence that response speed or communication handling may be inadequate.
+  default_state: unknown
+  freshness_days: 45
+  inputs:
+  - reviews.slow_response_topic
+  - reviews.unanswered_topic
+  - website.live_chat_present
+  - contact.whatsapp.state
+- id: digital_gap
+  domain: opportunity
+  type: score
+  description: Difference between observable customer/operational demand and current digital capability.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - customer_interaction_intensity
+  - digital_maturity
+  - website.booking_present
+  - website.ecommerce_present
+- id: manual_process_indicator
+  domain: opportunity
+  type: score
+  description: Evidence-backed likelihood that customer-facing workflows contain manual steps suitable for automation.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - operations.manual_workflow_observed
+  - operations.manual_handoff_observed
+  - assessment.manual_process_confirmed
+- id: customer_experience_gap
+  domain: opportunity
+  type: score
+  description: Evidence of material customer experience friction.
+  default_state: unknown
+  freshness_days: 45
+  inputs:
+  - complaint_intensity
+  - responsiveness_gap
+  - reviews.wait_time_topic
+  - reviews.booking_difficulty_topic
+  - reviews.delivery_problem_topic
+- id: technology_dependency
+  domain: technology
+  type: score
+  description: Observable dependence on digital systems for customer, operational or transactional workflows.
+  default_state: unknown
+  freshness_days: 90
+  inputs:
+  - digital.website_present
+  - website.booking_present
+  - website.ecommerce_present
+  - website.customer_portal_present
+  - organization.location_count
+  - customer_interaction_intensity

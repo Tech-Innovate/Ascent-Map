@@ -1,0 +1,303 @@
+version: 1
+
+classifications:
+  candidate: 0.50
+  good_fit: 0.70
+  strong_fit: 0.85
+
+services:
+  - id: customer_messaging_automation
+    name: Customer Messaging Automation
+    portfolio: customer_experience
+    description: Automates repetitive customer enquiries, notifications and service workflows across supported messaging channels.
+    enabled: true
+
+    problems:
+      - repetitive_customer_queries
+      - slow_response
+      - fragmented_customer_messaging
+      - high_inbound_message_volume
+
+    prerequisites:
+      - fact: organization.status
+        operator: not_in
+        value: [permanently_closed]
+      - any:
+          - signal: whatsapp_presence
+            operator: "=="
+            value: present
+          - fact: contact.phone.state
+            operator: "=="
+            value: present
+          - fact: contact.email.state
+            operator: "=="
+            value: present
+
+    positive_rules:
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: high
+        weight: 0.20
+      - signal: whatsapp_presence
+        operator: "=="
+        value: present
+        weight: 0.15
+      - signal: appointment_driven
+        operator: "=="
+        value: true
+        weight: 0.15
+      - signal: responsiveness_gap
+        operator: ">="
+        value: 0.50
+        weight: 0.25
+      - signal: multi_location
+        operator: "=="
+        value: true
+        weight: 0.10
+      - signal: digital_maturity
+        operator: ">="
+        value: medium
+        weight: 0.15
+
+    limiting_rules:
+      - signal: customer_interaction_intensity
+        operator: "<="
+        value: low
+        penalty: 0.25
+
+    discovery_questions:
+      - What messaging platform is currently used?
+      - What proportion of enquiries are repetitive?
+      - How many staff handle customer messages?
+      - Are message histories centralized?
+      - Is there an existing CRM?
+
+  - id: appointment_automation
+    name: Appointment and Scheduling Automation
+    portfolio: customer_experience
+    description: Improves appointment capture, reminders, rescheduling and scheduling coordination.
+    enabled: true
+
+    problems:
+      - manual_booking
+      - missed_appointments
+      - repetitive_booking_queries
+      - scheduling_coordination
+
+    prerequisites:
+      - signal: appointment_driven
+        operator: "=="
+        value: true
+
+    positive_rules:
+      - signal: appointment_driven
+        operator: "=="
+        value: true
+        weight: 0.30
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: medium
+        weight: 0.15
+      - signal: manual_process_indicator
+        operator: ">="
+        value: 0.40
+        weight: 0.25
+      - signal: responsiveness_gap
+        operator: ">="
+        value: 0.40
+        weight: 0.15
+      - signal: multi_location
+        operator: "=="
+        value: true
+        weight: 0.15
+
+    discovery_questions:
+      - What scheduling system is currently used?
+      - Are reminders sent automatically?
+      - Can customers reschedule without staff assistance?
+      - What is the no-show rate?
+      - Are bookings centralized across locations?
+
+  - id: contact_center_modernization
+    name: Contact Center Modernization
+    portfolio: customer_experience
+    description: Improves multi-channel contact handling, routing, visibility and service consistency.
+    enabled: true
+
+    problems:
+      - fragmented_channels
+      - high_contact_volume
+      - limited_routing
+      - poor_visibility
+      - inconsistent_service
+
+    positive_rules:
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: high
+        weight: 0.25
+      - signal: operational_complexity
+        operator: ">="
+        value: medium
+        weight: 0.20
+      - signal: multi_location
+        operator: "=="
+        value: true
+        weight: 0.15
+      - signal: responsiveness_gap
+        operator: ">="
+        value: 0.50
+        weight: 0.20
+      - signal: phone_reliance
+        operator: ">="
+        value: 0.50
+        weight: 0.20
+
+    discovery_questions:
+      - How many agents handle customer contacts?
+      - Which channels are currently supported?
+      - Is there centralized queueing or routing?
+      - Are call and message histories unified?
+      - What service-level targets are used?
+
+  - id: website_modernization
+    name: Website and Digital Experience Modernization
+    portfolio: digital
+    description: Improves the public digital experience, conversion paths, accessibility and customer self-service.
+    enabled: true
+
+    problems:
+      - outdated_website
+      - weak_mobile_experience
+      - poor_conversion
+      - low_self_service
+
+    positive_rules:
+      - signal: digital_gap
+        operator: ">="
+        value: 0.45
+        weight: 0.35
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: medium
+        weight: 0.15
+      - fact: digital.website_present
+        operator: "=="
+        value: true
+        weight: 0.10
+      - fact: digital.mobile_ready
+        operator: "=="
+        value: false
+        weight: 0.20
+      - signal: customer_experience_gap
+        operator: ">="
+        value: 0.40
+        weight: 0.20
+
+    discovery_questions:
+      - Who owns the website platform?
+      - What is the current CMS?
+      - Which customer journeys are most important?
+      - Is analytics instrumentation in place?
+      - Are Arabic and English experiences equivalent?
+
+  - id: managed_it
+    name: Managed IT Services
+    portfolio: infrastructure
+    description: Ongoing management of end-user, server, network and core IT operations.
+    enabled: true
+
+    positive_rules:
+      - signal: organization_size
+        operator: ">="
+        value: medium
+        weight: 0.20
+      - signal: operational_complexity
+        operator: ">="
+        value: medium
+        weight: 0.25
+      - signal: multi_location
+        operator: "=="
+        value: true
+        weight: 0.25
+      - signal: technology_dependency
+        operator: ">="
+        value: 0.50
+        weight: 0.30
+
+    discovery_questions:
+      - How is IT currently supported?
+      - Is there an internal IT team?
+      - How many sites and users are supported?
+      - What are the critical business applications?
+      - Are monitoring and service management centralized?
+
+  - id: cybersecurity_assessment
+    name: Cybersecurity Assessment
+    portfolio: security
+    description: Reviews cybersecurity exposure, controls and operational risk posture.
+    enabled: true
+
+    positive_rules:
+      - signal: technology_dependency
+        operator: ">="
+        value: 0.40
+        weight: 0.25
+      - signal: digital_maturity
+        operator: ">="
+        value: medium
+        weight: 0.15
+      - fact: website.customer_portal_present
+        operator: "=="
+        value: true
+        weight: 0.20
+      - fact: website.ecommerce_present
+        operator: "=="
+        value: true
+        weight: 0.20
+      - signal: organization_size
+        operator: ">="
+        value: medium
+        weight: 0.20
+
+    discovery_questions:
+      - Is there a formal security program?
+      - When was the last security assessment?
+      - Are external systems penetration-tested?
+      - Is MFA enforced for critical systems?
+      - How are vulnerabilities tracked?
+
+  - id: workflow_automation
+    name: Business Workflow Automation
+    portfolio: automation
+    description: Automates repetitive operational workflows and system handoffs.
+    enabled: true
+
+    positive_rules:
+      - signal: manual_process_indicator
+        operator: ">="
+        value: 0.45
+        weight: 0.35
+      - signal: operational_complexity
+        operator: ">="
+        value: medium
+        weight: 0.20
+      - signal: digital_maturity
+        operator: ">="
+        value: medium
+        weight: 0.15
+      - signal: customer_interaction_intensity
+        operator: ">="
+        value: medium
+        weight: 0.15
+      - signal: multi_location
+        operator: "=="
+        value: true
+        weight: 0.15
+
+    discovery_questions:
+      - Which repetitive processes consume the most staff time?
+      - Where is data re-entered manually?
+      - Which systems exchange information manually?
+      - Which workflows have approval bottlenecks?
+      - Which processes create the most customer delays?
