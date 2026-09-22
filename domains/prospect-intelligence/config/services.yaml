@@ -256,7 +256,8 @@ services:
         value: true
         weight: 0.20
       - signal: organization_size
-        operator: ">="n        value: medium
+        operator: ">="
+        value: medium
         weight: 0.20
 
     discovery_questions:
