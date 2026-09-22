@@ -101,8 +101,19 @@ def _external_identity(record: dict[str, Any]) -> tuple[str, str]:
         value = record.get(field)
         if is_meaningful(value):
             return field, str(value)
-    fallback = json.dumps(record, sort_keys=True, ensure_ascii=False)
-    return "record_hash", hashlib.sha256(fallback.encode("utf-8")).hexdigest()
+    # Fallback identity deliberately excludes volatile fields such as ratings,
+    # reviews, hours, and status so a later scrape of the same listing does not
+    # create a new entity solely because the listing changed over time.
+    identity = {
+        "title": record.get("title"),
+        "address": record.get("address"),
+        "latitude": record.get("latitude"),
+        "longitude": record.get("longitude", record.get("longtitude")),
+        "phone": record.get("phone"),
+        "website": record.get("web_site") or record.get("website"),
+    }
+    fallback = json.dumps(identity, sort_keys=True, ensure_ascii=False)
+    return "identity_hash", hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
 
 def parse_business(record: dict[str, Any], mapping: dict[str, str]) -> ParsedBusiness:
@@ -111,13 +122,14 @@ def parse_business(record: dict[str, Any], mapping: dict[str, str]) -> ParsedBus
         raise ValueError("Maps record is missing title")
     normalized = normalize_name(title)
     website = record.get("web_site") or record.get("website")
-    domain = website_domain(str(website)) if website else None
     ext_type, ext_value = _external_identity(record)
-    business_key = f"domain:{domain}" if domain else f"listing:{ext_type}:{ext_value}"
-    business_id = stable_id("biz", business_key)
-    location_key = record.get("place_id") or record.get("cid") or (
-        f"{record.get('address')}|{record.get('latitude')}|{record.get('longitude')}"
-    )
+
+    # A Maps listing is a source entity, not automatically an organization.
+    # Organization/branch grouping is performed later by the evidence-backed
+    # identity resolver; destructive domain-based merging at ingestion loses
+    # information and is therefore prohibited.
+    business_id = stable_id("biz", "google_maps", ext_type, ext_value)
+    location_key = record.get("place_id") or record.get("cid") or ext_value
     location_id = stable_id("loc", business_id, location_key)
     source_entity_id = stable_id("src", "google_maps", ext_type, ext_value)
 
