@@ -213,12 +213,16 @@ def resolve_organizations(db: Database) -> dict[str, int]:
         for item in features:
             components[uf.find(item.business_id)].append(item)
 
+        # DuckDB's FK implementation does not permit deleting child and parent
+        # rows in the same explicit transaction. These tables are entirely
+        # derived and reproducible, so perform the dependency-ordered cleanup
+        # as autocommitted statements, then insert the newly resolved graph atomically.
+        con.execute("DELETE FROM entity_resolution_edge")
+        con.execute("DELETE FROM organization_member")
+        con.execute("DELETE FROM organization")
+
         con.execute("BEGIN TRANSACTION")
         try:
-            con.execute("DELETE FROM entity_resolution_edge")
-            con.execute("DELETE FROM organization_member")
-            con.execute("DELETE FROM organization")
-
             for left, right, score, decision, reasons in edges:
                 left_id, right_id = sorted((left.business_id, right.business_id))
                 edge_id = stable_id("edge", left_id, right_id)
