@@ -66,7 +66,9 @@ def _store_page_evidence(
     added = 0
     for item in evidence:
         encoded = json_value(item.value)
-        evidence_id = stable_id("ev", artifact_id, source_entity_id, item.predicate, encoded)
+        # The same website/source observing the same predicate/value on several
+        # pages is one corroborating source, not multiple independent votes.
+        evidence_id = stable_id("ev", source_entity_id, item.predicate, encoded)
         existed = con.execute("SELECT count(*) FROM evidence WHERE evidence_id = ?", [evidence_id]).fetchone()[0]
         con.execute(
             """INSERT INTO evidence
