@@ -29,12 +29,29 @@ def test_match_separates_fit_from_evidence_coverage():
     assert result.status == "insufficient_evidence"
 
 
-def test_failed_prerequisite_is_ineligible():
+def test_failed_prerequisite_preserves_actual_confidence():
     subject = {
         "id": "svc",
         "prerequisites": [{"fact": "organization.status", "operator": "not_in", "value": ["permanently_closed"]}],
         "positive_rules": [],
     }
-    facts = {"organization.status": Fact("organization.status", "permanently_closed", "present", 1.0)}
+    facts = {"organization.status": Fact("organization.status", "permanently_closed", "present", 0.42)}
     result = evaluate_match(subject, facts, {})
     assert result.status == "ineligible"
+    assert result.evidence_confidence == 0.42
+
+
+def test_any_true_confidence_uses_supporting_child_only():
+    rule = {
+        "any": [
+            {"fact": "phone", "operator": "==", "value": "present"},
+            {"fact": "email", "operator": "==", "value": "present"},
+        ]
+    }
+    facts = {
+        "phone": Fact("phone", "present", "present", 0.55),
+        "email": Fact("email", "absent", "present", 0.99),
+    }
+    result = evaluate_rule(rule, facts, {})
+    assert result["state"] == "true"
+    assert result["confidence"] == 0.55
