@@ -81,7 +81,7 @@ ascent-map evaluate
 ascent-map show
 ```
 
-Website enrichment is intentionally explicit. It performs a small, bounded crawl of the canonical public website, respects applicable `robots.txt` path rules, stores fetched HTML under `.ascent-map/raw/web/`, and rejects localhost/private/link-local/reserved targets and unsafe redirects.
+Website enrichment is opt-in. It performs a small, bounded crawl of the canonical public website, respects applicable `robots.txt` path rules, stores fetched HTML under `.ascent-map/raw/web/`, and rejects localhost/private/link-local/reserved targets and unsafe redirects.
 
 ## V0.2 website evidence
 
