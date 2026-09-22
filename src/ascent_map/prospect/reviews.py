@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -81,13 +80,14 @@ def normalize_review(data: dict[str, Any], source_field: str) -> NormalizedRevie
     language = _pick(data, "language", "Language", "translated_lang", "TranslatedLang")
     label = _pick(data, "When", "when")
     reply = _pick(data, "reply_text", "ReplyText", "reply_text_original", "ReplyTextOriginal")
+    published_at = _published_at(data)
     if not text and rating is None and not external_id:
         return None
     canonical = {
         "external_review_id": str(external_id) if external_id else None,
         "rating": rating,
         "text": text,
-        "published_at": _published_at(data).isoformat() if _published_at(data) else None,
+        "published_at": published_at.isoformat() if published_at else None,
         "published_label": str(label) if label else None,
     }
     digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -97,7 +97,7 @@ def normalize_review(data: dict[str, Any], source_field: str) -> NormalizedRevie
         rating=rating,
         text=text,
         language=str(language) if language else None,
-        published_at=_published_at(data),
+        published_at=published_at,
         published_label=str(label) if label else None,
         has_owner_reply=bool(reply),
         content_sha256=digest,
@@ -252,6 +252,14 @@ def _topic_confidence(sample_size: int, matches: int) -> float:
 def refresh_review_topic_evidence(con, business_ids: list[str], collected_at: datetime) -> dict[str, int]:
     stats = {"reviews": 0, "topic_evidence": 0}
     for business_id in business_ids:
+        # Derived topic state is temporal. Historical summaries remain in
+        # review_topic_summary, but only evidence from the latest refresh may
+        # participate in current fact resolution.
+        con.execute(
+            """UPDATE evidence SET is_active = false
+               WHERE business_id = ? AND collector = 'ascent-map/review-rules' AND is_active = true""",
+            [business_id],
+        )
         rows = con.execute(
             """SELECT review_observation_id, source_entity_id, artifact_id, rating, text
                FROM review_observation
@@ -259,8 +267,6 @@ def refresh_review_topic_evidence(con, business_ids: list[str], collected_at: da
                ORDER BY collected_at DESC, review_observation_id""",
             [business_id],
         ).fetchall()
-        # A review can appear in both inline and extended arrays. The normalized
-        # table deduplicates exact content, so sample_size reflects unique text observations.
         stats["reviews"] += len(rows)
         if not rows:
             continue
@@ -274,7 +280,9 @@ def refresh_review_topic_evidence(con, business_ids: list[str], collected_at: da
             confidence = _topic_confidence(len(rows), len(matched))
             review_ids = [row[0] for row in matched]
             predicate = f"reviews.{topic_id}_topic"
-            summary_id = stable_id("rts", business_id, topic_id, RULE_VERSION, json_value(review_ids))
+            summary_id = stable_id(
+                "rts", business_id, topic_id, RULE_VERSION, len(rows), len(matched), json_value(review_ids), score
+            )
             con.execute(
                 """INSERT INTO review_topic_summary
                    (summary_id, business_id, topic_id, score, confidence, sample_size,
@@ -287,6 +295,7 @@ def refresh_review_topic_evidence(con, business_ids: list[str], collected_at: da
             encoded = json_value(score)
             evidence_id = stable_id("ev", "review_topic", summary_id, predicate, encoded)
             existed = con.execute("SELECT count(*) FROM evidence WHERE evidence_id = ?", [evidence_id]).fetchone()[0]
+            notes = json.dumps({"sample_size": len(rows), "matched_count": len(matched), "review_ids": review_ids})
             con.execute(
                 """INSERT INTO evidence
                    (evidence_id, business_id, source_entity_id, artifact_id, predicate, value_json,
@@ -296,8 +305,13 @@ def refresh_review_topic_evidence(con, business_ids: list[str], collected_at: da
                            'ascent-map/review-rules', ?, ?)
                    ON CONFLICT DO NOTHING""",
                 [evidence_id, business_id, source_entity_id, artifact_id, predicate, encoded,
-                 value_type(score), collected_at, collected_at, confidence, RULE_VERSION,
-                 json.dumps({"sample_size": len(rows), "matched_count": len(matched), "review_ids": review_ids})],
+                 value_type(score), collected_at, collected_at, confidence, RULE_VERSION, notes],
+            )
+            con.execute(
+                """UPDATE evidence
+                   SET is_active = true, observed_at = ?, collected_at = ?, notes = ?
+                   WHERE evidence_id = ?""",
+                [collected_at, collected_at, notes, evidence_id],
             )
             if not existed:
                 stats["topic_evidence"] += 1
