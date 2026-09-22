@@ -176,7 +176,7 @@ def derive_signals(facts: dict[str, Fact], signal_definitions: list[dict[str, An
     ctx = Context(facts)
     derive_baseline(ctx)
     explicit_unknowns = {
-        "responsiveness_gap": "review-topic analysis not yet implemented",
+        "responsiveness_gap": "review-topic evidence not observed",
         "manual_process_indicator": "current sources cannot prove a workflow is manual",
         "social_messaging_presence": "social-channel enrichment not yet observed",
         "contact_form_presence": "website form enrichment not yet observed",
@@ -184,10 +184,11 @@ def derive_signals(facts: dict[str, Fact], signal_definitions: list[dict[str, An
     for signal_id, reason in explicit_unknowns.items():
         ctx.signals.setdefault(signal_id, unknown(signal_id, reason))
 
-    # Lazy import avoids a module cycle while allowing website-derived facts to
-    # strengthen the same canonical signal set used by every downstream rule.
     from .web_signals import augment_web_signals
     augment_web_signals(facts, ctx.signals)
+
+    from .review_signals import augment_review_signals
+    augment_review_signals(facts, ctx.signals)
 
     for definition in signal_definitions:
         signal_id = definition["id"]
