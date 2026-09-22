@@ -59,15 +59,15 @@ def _store_page_evidence(
         """INSERT INTO raw_artifact
            (artifact_id, source_type, media_type, storage_path, content_sha256,
             collector, collector_version, collected_at)
-           VALUES (?, 'official_website', ?, ?, ?, 'ascent-map/web', '0.2.0', ?)
+           VALUES (?, 'official_website', ?, ?, ?, 'ascent-map/web', '0.3.0', ?)
            ON CONFLICT DO NOTHING""",
         [artifact_id, fetched.content_type, storage_path, digest, collected],
     )
     added = 0
     for item in evidence:
         encoded = json_value(item.value)
-        # The same website/source observing the same predicate/value on several
-        # pages is one corroborating source, not multiple independent votes.
+        # The same listing/site source observing the same predicate/value on
+        # several pages is one corroborating source, not independent votes.
         evidence_id = stable_id("ev", source_entity_id, item.predicate, encoded)
         existed = con.execute("SELECT count(*) FROM evidence WHERE evidence_id = ?", [evidence_id]).fetchone()[0]
         con.execute(
@@ -75,7 +75,7 @@ def _store_page_evidence(
                (evidence_id, business_id, source_entity_id, artifact_id, predicate,
                 value_json, value_type, observed_at, collected_at, source_reliability,
                 directness, extraction_confidence, collector, collector_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.97, ?, ?, 'ascent-map/web', '0.2.0')
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.97, ?, ?, 'ascent-map/web', '0.3.0')
                ON CONFLICT DO NOTHING""",
             [
                 evidence_id,
@@ -127,27 +127,27 @@ def enrich_websites(
             stats["errors"] += 1
             continue
         root_source_url = website_url if "://" in website_url else f"https://{website_url}"
-        # Validate the root even when a custom fetcher is injected. This keeps
-        # the acquisition boundary independent from the HTTP implementation.
         try:
             validate_public_url(root_source_url)
         except ValueError:
-            # Tests and fully offline adapters may intentionally use the .invalid
-            # TLD; allow that reserved documentation suffix only when a custom
-            # fetcher is supplied. Production/default fetches still reject it.
+            # Tests and fully offline adapters may intentionally use .invalid.
             if fetcher is fetch_website or not domain.endswith(".invalid"):
                 stats["errors"] += 1
                 continue
 
-        source_entity_id = stable_id("src", "official_website", "domain", domain)
+        # A domain can legitimately be shared by several branch listings. Keep
+        # provenance attached to the listing being enriched; organization-level
+        # corroboration is resolved later without violating source_entity FKs.
+        external_id = f"{biz_id}:{domain}"
+        source_entity_id = stable_id("src", "official_website", "business_domain", external_id)
         with db.connect() as con:
             con.execute(
                 """INSERT INTO source_entity
                    (source_entity_id, business_id, source_type, external_id_type, external_id,
                     source_url, first_seen_at, last_seen_at)
-                   VALUES (?, ?, 'official_website', 'domain', ?, ?, ?, ?)
+                   VALUES (?, ?, 'official_website', 'business_domain', ?, ?, ?, ?)
                    ON CONFLICT DO NOTHING""",
-                [source_entity_id, biz_id, domain, root_source_url, collected, collected],
+                [source_entity_id, biz_id, external_id, root_source_url, collected, collected],
             )
             con.execute("UPDATE source_entity SET last_seen_at = ? WHERE source_entity_id = ?", [collected, source_entity_id])
 
