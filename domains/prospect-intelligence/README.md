@@ -52,6 +52,8 @@ ascent-map run path/to/maps-results.json --enrich-web --max-pages 3
 
 Use `--json` with `show` or `run` for a machine-readable report. The default database and immutable raw-artifact store live under `.ascent-map/`, which is intentionally excluded from Git.
 
+Website enrichment is opt-in; `run` does not perform website requests unless `--enrich-web` is supplied.
+
 ## What V0.2 does
 
 1. Accepts `gosom/google-maps-scraper` JSON arrays, single JSON objects, or JSONL.
