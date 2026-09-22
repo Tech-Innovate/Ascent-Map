@@ -2,7 +2,7 @@
 
 Ascent Map is a local-first intelligence and decision-support system for turning heterogeneous evidence into explainable profiles, evaluations, and actions.
 
-External systems such as Google Maps are adapters: they provide evidence, but they do not own canonical truth, profiles, or decisions.
+External systems such as Google Maps and official business websites are adapters: they provide evidence, but they do not own canonical truth, profiles, or decisions.
 
 ## Architectural model
 
@@ -55,7 +55,7 @@ Observed fact
 
 A scraped value is evidence. A profile attribute is an interpretation. A service match is an evaluation against that profile. The layers remain separate and traceable.
 
-## V0.1 quick start
+## V0.2 quick start
 
 Requirements: Python 3.11+.
 
@@ -64,21 +64,39 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python -m pip install -e '.[dev]'
 
+# Maps-only local path; performs no website network requests.
 ascent-map run path/to/google-maps-results.json
+
+# Explicitly enable official-website enrichment before evaluation.
+ascent-map run path/to/google-maps-results.json --enrich-web
 ```
 
-The command initializes a local DuckDB database, preserves the source payload under `.ascent-map/raw/`, ingests evidence, derives baseline signals, creates profile snapshots, evaluates configured services/channels, and prints an explainable report.
-
-Individual stages are also available:
+Individual stages are available as well:
 
 ```bash
 ascent-map init-db
 ascent-map ingest-maps path/to/results.json
+ascent-map enrich-web --max-pages 3
 ascent-map evaluate
 ascent-map show
 ```
 
-See `domains/prospect-intelligence/README.md` for the domain contract and V0.1 behavior.
+Website enrichment is intentionally explicit. It performs a small, bounded crawl of the canonical public website, respects applicable `robots.txt` path rules, stores fetched HTML under `.ascent-map/raw/web/`, and rejects localhost/private/link-local/reserved targets and unsafe redirects.
+
+## V0.2 website evidence
+
+The first website adapter can observe evidence for:
+
+- WhatsApp, public email, phone, and contact forms;
+- booking/appointment flows;
+- ecommerce/checkout indicators;
+- customer portals;
+- Instagram, Facebook, and LinkedIn links;
+- multilingual support;
+- HTTPS and mobile viewport support;
+- richer digital-maturity inputs.
+
+It does **not** infer missing capabilities as false. Absence on a crawled page normally remains unknown.
 
 ## Repository layout
 
@@ -116,11 +134,11 @@ python domains/prospect-intelligence/tools/validate_config.py
 pytest -q
 ```
 
-GitHub Actions runs configuration validation, unit tests, and the DuckDB end-to-end integration test.
+GitHub Actions runs configuration validation, unit tests, the DuckDB Maps pipeline test, and deterministic official-website enrichment tests without calling the public Internet.
 
 ## Status
 
-V0.1 local Prospect Intelligence pipeline is under active bootstrap development.
+V0.2 local Prospect Intelligence pipeline is under active bootstrap development.
 
 ## License
 
