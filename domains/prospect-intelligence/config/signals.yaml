@@ -283,12 +283,15 @@ signals:
 - id: complaint_intensity
   domain: reputation
   type: score
-  description: Frequency and severity of negative review themes.
+  description: Strength of recurring customer-friction themes observed in the normalized review sample.
   default_state: unknown
   freshness_days: 45
   inputs:
-  - reviews.negative_topic_ratio
-  - reviews.recent_negative_ratio
+  - reviews.slow_response_topic
+  - reviews.unanswered_topic
+  - reviews.booking_difficulty_topic
+  - reviews.wait_time_topic
+  - reviews.delivery_problem_topic
 - id: responsiveness_gap
   domain: opportunity
   type: score
@@ -314,15 +317,13 @@ signals:
 - id: manual_process_indicator
   domain: opportunity
   type: score
-  description: Likelihood that customer-facing workflows contain manual steps suitable for automation.
+  description: Evidence-backed likelihood that customer-facing workflows contain manual steps suitable for automation.
   default_state: unknown
   freshness_days: 90
   inputs:
-  - appointment_driven
-  - website.booking_present
-  - contact.phone.state
-  - contact.whatsapp.state
-  - reviews.booking_difficulty_topic
+  - operations.manual_workflow_observed
+  - operations.manual_handoff_observed
+  - assessment.manual_process_confirmed
 - id: customer_experience_gap
   domain: opportunity
   type: score
@@ -346,5 +347,5 @@ signals:
   - website.booking_present
   - website.ecommerce_present
   - website.customer_portal_present
-  - operations.multi_location
+  - organization.location_count
   - customer_interaction_intensity
