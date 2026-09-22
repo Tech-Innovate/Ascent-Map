@@ -2,7 +2,7 @@
 
 Ascent Map is a local-first intelligence and decision-support system for turning heterogeneous evidence into explainable profiles, evaluations, and actions.
 
-The project is organized around explicit architectural boundaries rather than around any single data source or business workflow. External systems such as Google Maps are adapters: they provide evidence, but they do not own canonical truth, profiles, or decisions.
+External systems such as Google Maps are adapters: they provide evidence, but they do not own canonical truth, profiles, or decisions.
 
 ## Architectural model
 
@@ -37,20 +37,11 @@ External sources / tools
              +-------------+     +-------------------+
 ```
 
-These are logical ownership boundaries. They do not require separate services or processes.
+These are logical ownership boundaries, not deployment requirements.
 
 ## First domain: Prospect Intelligence
 
-The first implemented domain uses public business evidence to build auditable potential-client profiles and evaluate:
-
-- observable business characteristics;
-- digital and operational maturity;
-- customer-interaction patterns;
-- service-portfolio fit;
-- communication-channel suitability;
-- evidence confidence and unresolved questions.
-
-The governing chain is:
+The first domain turns public business evidence into auditable potential-client profiles and evaluates service-portfolio fit and communication-channel suitability.
 
 ```text
 Observed fact
@@ -62,43 +53,74 @@ Observed fact
     -> Human-reviewed decision support
 ```
 
-A scraped value is evidence. A profile attribute is a derived interpretation. A service match is an evaluation against that profile. These layers must remain separate and traceable.
+A scraped value is evidence. A profile attribute is an interpretation. A service match is an evaluation against that profile. The layers remain separate and traceable.
 
-See `domains/prospect-intelligence/` for the first domain implementation.
+## V0.1 quick start
+
+Requirements: Python 3.11+.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -e '.[dev]'
+
+ascent-map run path/to/google-maps-results.json
+```
+
+The command initializes a local DuckDB database, preserves the source payload under `.ascent-map/raw/`, ingests evidence, derives baseline signals, creates profile snapshots, evaluates configured services/channels, and prints an explainable report.
+
+Individual stages are also available:
+
+```bash
+ascent-map init-db
+ascent-map ingest-maps path/to/results.json
+ascent-map evaluate
+ascent-map show
+```
+
+See `domains/prospect-intelligence/README.md` for the domain contract and V0.1 behavior.
 
 ## Repository layout
 
 ```text
 Ascent-Map/
+├── .github/workflows/ci.yml
 ├── docs/
-│   ├── architecture/
-│   └── adr/
+│   └── architecture/
 ├── domains/
 │   └── prospect-intelligence/
+│       ├── config/
+│       ├── db/
+│       ├── examples/
+│       └── tools/
 ├── src/
-│   ├── state/
-│   ├── memory/
-│   ├── context/
-│   ├── reasoning/
-│   ├── agency/
-│   ├── evaluation/
-│   └── adapters/
+│   └── ascent_map/
+│       └── prospect/
 └── tests/
 ```
 
 ## Principles
 
-1. **Evidence before inference** — derived claims must retain provenance.
+1. **Evidence before inference** — derived claims retain provenance.
 2. **Unknown is not false** — absence, uncertainty, conflict, and inapplicability are distinct states.
 3. **Immutable historical state** — profiles and evaluations are versioned snapshots.
-4. **Separate fit from confidence** — a high apparent fit with weak evidence is not equivalent to a high-confidence fit.
+4. **Separate fit from confidence** — apparent fit and evidence quality are different dimensions.
 5. **Adapters do not own truth** — source schemas are normalized at the boundary.
-6. **LLMs produce claims, not silent mutations** — semantic interpretation must remain attributable and reviewable.
+6. **LLMs produce claims, not silent mutations** — semantic interpretation remains attributable and reviewable.
 7. **Human agency at decision boundaries** — evaluations inform decisions; they do not silently execute consequential outreach or commitments.
+
+## Validation
+
+```bash
+python domains/prospect-intelligence/tools/validate_config.py
+pytest -q
+```
+
+GitHub Actions runs configuration validation, unit tests, and the DuckDB end-to-end integration test.
 
 ## Status
 
-Early architecture and first-domain bootstrap.
+V0.1 local Prospect Intelligence pipeline is under active bootstrap development.
 
 ## License
 
