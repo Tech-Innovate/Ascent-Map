@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ascent-map"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first evidence and decision-support engine for Ascent Map"
 readme = "README.md"
 requires-python = ">=3.11"
