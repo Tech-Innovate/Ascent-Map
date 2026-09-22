@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from itertools import combinations
 from typing import Any
 
 from ascent_map.db import Database, decode_json, rows_as_dicts
@@ -38,8 +39,6 @@ def normalize_phone(value: str) -> str | None:
     digits = re.sub(r"\D", "", value or "")
     if len(digits) < 7:
         return None
-    # Comparing the last 9 digits tolerates common country/trunk formatting
-    # without pretending that short local numbers are globally unique.
     return digits[-9:]
 
 
@@ -110,7 +109,6 @@ def score_pair(left: EntityFeatures, right: EntityFeatures) -> tuple[float, str,
     domains = _shared_domain(left, right)
     phones = left.phones & right.phones
     reasons: list[str] = []
-
     if domains:
         reasons.append(f"shared official domain: {sorted(domains)[0]}")
     if phones:
@@ -131,6 +129,48 @@ def score_pair(left: EntityFeatures, right: EntityFeatures) -> tuple[float, str,
     if left.normalized_name and left.normalized_name == right.normalized_name:
         return 0.58, "candidate", ["exact normalized name only"]
     return 0.0, "rejected", []
+
+
+def _bucket_pairs(items: list[EntityFeatures]) -> set[tuple[str, str]]:
+    ordered = sorted(items, key=lambda item: (item.normalized_name, item.business_id))
+    if len(ordered) <= 50:
+        return {
+            tuple(sorted((left.business_id, right.business_id)))
+            for left, right in combinations(ordered, 2)
+        }
+    # Very large brands/chains must not turn resolution into O(n²). Compare a
+    # stable anchor to each member plus adjacent names. This is conservative:
+    # uncertain sub-clusters remain candidates rather than being force-merged.
+    anchor = ordered[0]
+    pairs = {
+        tuple(sorted((anchor.business_id, item.business_id)))
+        for item in ordered[1:]
+    }
+    pairs.update(
+        tuple(sorted((ordered[index - 1].business_id, ordered[index].business_id)))
+        for index in range(1, len(ordered))
+    )
+    return pairs
+
+
+def _candidate_pairs(features: list[EntityFeatures]) -> set[tuple[str, str]]:
+    by_domain: dict[str, list[EntityFeatures]] = defaultdict(list)
+    by_phone: dict[str, list[EntityFeatures]] = defaultdict(list)
+    by_name: dict[str, list[EntityFeatures]] = defaultdict(list)
+    for item in features:
+        for domain in item.domains:
+            if domain not in SHARED_HOSTS:
+                by_domain[domain].append(item)
+        for phone in item.phones:
+            by_phone[phone].append(item)
+        if item.normalized_name:
+            by_name[item.normalized_name].append(item)
+
+    pairs: set[tuple[str, str]] = set()
+    for bucket in (*by_domain.values(), *by_phone.values(), *by_name.values()):
+        if len(bucket) > 1:
+            pairs.update(_bucket_pairs(bucket))
+    return pairs
 
 
 class _UnionFind:
@@ -156,17 +196,18 @@ class _UnionFind:
 def resolve_organizations(db: Database) -> dict[str, int]:
     with db.connect() as con:
         features = _features(con)
-        ids = [item.business_id for item in features]
+        by_id = {item.business_id: item for item in features}
+        ids = list(by_id)
         uf = _UnionFind(ids)
         edges: list[tuple[EntityFeatures, EntityFeatures, float, str, list[str]]] = []
-        for index, left in enumerate(features):
-            for right in features[index + 1:]:
-                score, decision, reasons = score_pair(left, right)
-                if decision == "rejected":
-                    continue
-                edges.append((left, right, score, decision, reasons))
-                if decision == "linked":
-                    uf.union(left.business_id, right.business_id)
+        for left_id, right_id in sorted(_candidate_pairs(features)):
+            left, right = by_id[left_id], by_id[right_id]
+            score, decision, reasons = score_pair(left, right)
+            if decision == "rejected":
+                continue
+            edges.append((left, right, score, decision, reasons))
+            if decision == "linked":
+                uf.union(left.business_id, right.business_id)
 
         components: dict[str, list[EntityFeatures]] = defaultdict(list)
         for item in features:
@@ -179,13 +220,13 @@ def resolve_organizations(db: Database) -> dict[str, int]:
             con.execute("DELETE FROM organization")
 
             for left, right, score, decision, reasons in edges:
-                edge_id = stable_id("edge", min(left.business_id, right.business_id), max(left.business_id, right.business_id))
+                left_id, right_id = sorted((left.business_id, right.business_id))
+                edge_id = stable_id("edge", left_id, right_id)
                 con.execute(
                     """INSERT INTO entity_resolution_edge
                        (edge_id, left_business_id, right_business_id, score, decision, reasons_json)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    [edge_id, min(left.business_id, right.business_id), max(left.business_id, right.business_id),
-                     score, decision, json_value(reasons)],
+                    [edge_id, left_id, right_id, score, decision, json_value(reasons)],
                 )
 
             linked_edges = [edge for edge in edges if edge[3] == "linked"]
@@ -195,7 +236,7 @@ def resolve_organizations(db: Database) -> dict[str, int]:
                 organization_id = stable_id("org", representative.business_id)
                 member_ids = {item.business_id for item in members}
                 component_scores = [
-                    score for left, right, score, decision, _ in linked_edges
+                    score for left, right, score, _, _ in linked_edges
                     if left.business_id in member_ids and right.business_id in member_ids
                 ]
                 confidence = min(component_scores) if component_scores else 1.0
@@ -208,8 +249,8 @@ def resolve_organizations(db: Database) -> dict[str, int]:
                      representative.business_id, confidence],
                 )
                 for member in ordered:
-                    reasons = []
-                    for left, right, score, decision, edge_reasons in linked_edges:
+                    reasons: list[str] = []
+                    for left, right, _, _, edge_reasons in linked_edges:
                         if member.business_id in {left.business_id, right.business_id} and (
                             left.business_id in member_ids and right.business_id in member_ids
                         ):
