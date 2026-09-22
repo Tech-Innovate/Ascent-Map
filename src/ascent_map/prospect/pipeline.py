@@ -10,22 +10,20 @@ from ascent_map.config import ProjectPaths, load_yaml
 from ascent_map.db import Database, decode_json, rows_as_dicts
 
 from .identity import organization_representatives, organization_scope, resolve_organizations
-from .ingest import json_value, parse_business, read_maps_records, stable_id, utc_now, value_type
+from .ingest import json_value, parse_business, read_maps_records, stable_id, utc_now, value_type, website_domain
 from .model import Fact, SignalResult
 from .reviews import refresh_review_topic_evidence, store_reviews
 from .rules import evaluate_match
 from .signals import derive_signals
 
-BRANCH_LOCAL_PREFIXES = (
-    "location.",
-    "source.google_maps.",
+BRANCH_LOCAL_PREDICATES = {
     "operations.open_hours",
     "operations.popular_times",
     "maps.reservations",
     "maps.order_online",
     "maps.menu",
     "reputation.reviews_per_rating",
-)
+}
 PRESENCE_PREDICATES = {
     "digital.website_present",
     "maps.phone_present",
@@ -170,47 +168,63 @@ def _write_fact(con, business_id: str, fact: Fact, method: str) -> None:
     )
 
 
-def _dedupe_sources(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _independence_key(item: dict[str, Any]) -> str:
+    if item.get("source_type") == "official_website":
+        domain = website_domain(item.get("source_url"))
+        if domain:
+            return f"official_website:{domain}"
+    return str(item.get("source_entity_id") or item["evidence_id"])
+
+
+def _latest_independent_sources(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return one current observation per independent source for a predicate.
+
+    Temporal precedence is more important than extraction quality within the
+    same source. A Maps rating changing from 4.2 to 4.4 is an update, not two
+    conflicting votes. Official-site observations from several branch crawls
+    of the same domain count as one independent web source.
+    """
     by_source: dict[str, dict[str, Any]] = {}
     for item in items:
-        source_key = str(item.get("source_entity_id") or item["evidence_id"])
+        source_key = _independence_key(item)
         current = by_source.get(source_key)
-        if current is None or (float(item["quality"]), item["collected_at"]) > (
-            float(current["quality"]), current["collected_at"]
-        ):
+        candidate_key = (item["collected_at"], float(item["quality"]), item["evidence_id"])
+        if current is None:
+            by_source[source_key] = item
+            continue
+        current_key = (current["collected_at"], float(current["quality"]), current["evidence_id"])
+        if candidate_key > current_key:
             by_source[source_key] = item
     return list(by_source.values())
 
 
 def _resolve_items(predicate: str, items: list[dict[str, Any]]) -> Fact:
+    current_items = _latest_independent_sources(items)
     if predicate in PRESENCE_PREDICATES:
-        positives = [item for item in items if item["value"] is True]
+        positives = [item for item in current_items if item["value"] is True]
         if positives:
-            chosen = _dedupe_sources(positives)
             return Fact(predicate, True, "present",
-                        combined_group_confidence([float(item["quality"]) for item in chosen]),
-                        [item["evidence_id"] for item in chosen])
+                        combined_group_confidence([float(item["quality"]) for item in positives]),
+                        [item["evidence_id"] for item in positives])
     if predicate in STATE_PREDICATES:
-        positives = [item for item in items if item["value"] == "present"]
+        positives = [item for item in current_items if item["value"] == "present"]
         if positives:
-            chosen = _dedupe_sources(positives)
             return Fact(predicate, "present", "present",
-                        combined_group_confidence([float(item["quality"]) for item in chosen]),
-                        [item["evidence_id"] for item in chosen])
+                        combined_group_confidence([float(item["quality"]) for item in positives]),
+                        [item["evidence_id"] for item in positives])
     if predicate.startswith("reviews.") and predicate.endswith("_topic"):
-        numeric = [item for item in items if isinstance(item["value"], (int, float))]
+        numeric = [item for item in current_items if isinstance(item["value"], (int, float))]
         if numeric:
             strongest = max(numeric, key=lambda item: (float(item["value"]), float(item["quality"])))
             return Fact(predicate, float(strongest["value"]), "present", float(strongest["quality"]),
                         [strongest["evidence_id"]])
 
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in items:
+    for item in current_items:
         groups[json_value(item["value"])].append(item)
     ranked: list[tuple[float, list[dict[str, Any]]]] = []
     for group in groups.values():
-        independent = _dedupe_sources(group)
-        ranked.append((combined_group_confidence([float(item["quality"]) for item in independent]), independent))
+        ranked.append((combined_group_confidence([float(item["quality"]) for item in group]), group))
     ranked.sort(key=lambda pair: pair[0], reverse=True)
     top_confidence, top_items = ranked[0]
     state = "conflicting" if len(ranked) > 1 and ranked[1][0] >= top_confidence - 0.08 else "present"
@@ -218,7 +232,13 @@ def _resolve_items(predicate: str, items: list[dict[str, Any]]) -> Fact:
                 [item["evidence_id"] for item in top_items])
 
 
-def _aggregate_reputation(con, representative: str, members: list[str], facts: dict[str, Fact]) -> None:
+def _aggregate_reputation(
+    con,
+    representative: str,
+    members: list[str],
+    facts: dict[str, Fact],
+    organization_confidence: float,
+) -> None:
     placeholders = ",".join("?" for _ in members)
     rows = rows_as_dicts(con.execute(
         f"""SELECT business_id, predicate, value_json, evidence_id, source_entity_id, collected_at,
@@ -245,7 +265,7 @@ def _aggregate_reputation(con, representative: str, members: list[str], facts: d
     if known_counts:
         total = sum(max(0, int(row["value"] or 0)) for row in known_counts)
         coverage = len(known_counts) / len(members)
-        confidence = (sum(float(row["quality"]) for row in known_counts) / len(known_counts)) * coverage
+        confidence = (sum(float(row["quality"]) for row in known_counts) / len(known_counts)) * coverage * organization_confidence
         fact = Fact("reputation.review_count", total, "present", confidence,
                     [row["evidence_id"] for row in known_counts])
         facts[fact.predicate] = fact
@@ -262,26 +282,70 @@ def _aggregate_reputation(con, representative: str, members: list[str], facts: d
             weight_total += weight
         value = weighted_sum / weight_total
         coverage = len(known_ratings) / len(members)
-        confidence = (sum(float(row["quality"]) for row in known_ratings) / len(known_ratings)) * coverage
+        confidence = (sum(float(row["quality"]) for row in known_ratings) / len(known_ratings)) * coverage * organization_confidence
         fact = Fact("reputation.review_rating", value, "present", confidence,
                     [row["evidence_id"] for row in known_ratings])
         facts[fact.predicate] = fact
         _write_fact(con, representative, fact, "organization_aggregate_v0.3")
 
 
+def _is_branch_local(predicate: str) -> bool:
+    return (
+        predicate.startswith("location.")
+        or predicate.startswith("source.google_maps.")
+        or predicate in BRANCH_LOCAL_PREDICATES
+    )
+
+
+def _latest_business_rows(con, members: list[str], predicate: str) -> list[dict[str, Any]]:
+    placeholders = ",".join("?" for _ in members)
+    rows = rows_as_dicts(con.execute(
+        f"""SELECT business_id, evidence_id, value_json, collected_at,
+                   source_reliability, directness, extraction_confidence
+            FROM evidence
+            WHERE business_id IN ({placeholders}) AND is_active = true AND predicate = ?
+            ORDER BY business_id, collected_at DESC""",
+        [*members, predicate],
+    ))
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["business_id"] in latest:
+            continue
+        row["value"] = decode_json(row["value_json"])
+        row["quality"] = quality_confidence(float(row["source_reliability"] or 0),
+                                             float(row["directness"] or 0),
+                                             float(row["extraction_confidence"] or 0))
+        latest[row["business_id"]] = row
+    return list(latest.values())
+
+
 def resolve_facts(con, business_id: str) -> tuple[dict[str, Fact], str | None, list[str]]:
     organization_id, representative, members = organization_scope(con, business_id)
     placeholders = ",".join("?" for _ in members)
+    organization_confidence = 1.0
+    organization_name: str | None = None
+    if organization_id:
+        org = con.execute(
+            "SELECT canonical_name, resolution_confidence FROM organization WHERE organization_id = ?",
+            [organization_id],
+        ).fetchone()
+        if org:
+            organization_name = str(org[0])
+            organization_confidence = float(org[1])
+
     rows = rows_as_dicts(con.execute(
-        f"""SELECT evidence_id, business_id, source_entity_id, predicate, value_json, collected_at,
-                   source_reliability, directness, extraction_confidence
-            FROM evidence WHERE business_id IN ({placeholders}) AND is_active = true
-            ORDER BY predicate, collected_at DESC""",
+        f"""SELECT e.evidence_id, e.business_id, e.source_entity_id, e.predicate, e.value_json,
+                   e.collected_at, e.source_reliability, e.directness, e.extraction_confidence,
+                   s.source_type, s.source_url
+            FROM evidence e
+            LEFT JOIN source_entity s ON s.source_entity_id = e.source_entity_id
+            WHERE e.business_id IN ({placeholders}) AND e.is_active = true
+            ORDER BY e.predicate, e.collected_at DESC""",
         members,
     ))
     by_predicate: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        if len(members) > 1 and row["business_id"] != representative and row["predicate"].startswith(BRANCH_LOCAL_PREFIXES):
+        if len(members) > 1 and row["business_id"] != representative and _is_branch_local(row["predicate"]):
             continue
         if row["predicate"] in {"reputation.review_count", "reputation.review_rating", "organization.name", "organization.categories", "organization.category"}:
             continue
@@ -300,54 +364,48 @@ def resolve_facts(con, business_id: str) -> tuple[dict[str, Fact], str | None, l
     count = int(con.execute(
         f"SELECT count(*) FROM location WHERE business_id IN ({placeholders})", members
     ).fetchone()[0])
-    location_fact = Fact("organization.location_count", count, "present", 1.0, [])
+    location_confidence = organization_confidence if len(members) > 1 else 1.0
+    location_fact = Fact("organization.location_count", count, "present", location_confidence, [])
     facts[location_fact.predicate] = location_fact
     _write_fact(con, representative, location_fact, "organization_aggregate_v0.3")
 
-    if organization_id:
-        org = con.execute(
-            "SELECT canonical_name, resolution_confidence FROM organization WHERE organization_id = ?",
-            [organization_id],
-        ).fetchone()
-        if org:
-            name_fact = Fact("organization.name", org[0], "present", float(org[1]), [])
-            facts[name_fact.predicate] = name_fact
-            _write_fact(con, representative, name_fact, "entity_resolution_v0.3")
+    if organization_name is not None:
+        name_fact = Fact("organization.name", organization_name, "present", organization_confidence, [])
+        facts[name_fact.predicate] = name_fact
+        _write_fact(con, representative, name_fact, "entity_resolution_v0.3")
 
-    category_rows = con.execute(
-        f"""SELECT value_json, evidence_id, source_reliability, directness, extraction_confidence
-            FROM evidence WHERE business_id IN ({placeholders}) AND is_active = true
-              AND predicate = 'organization.category' ORDER BY collected_at DESC""",
-        members,
-    ).fetchall()
+    category_rows = _latest_business_rows(con, members, "organization.category")
     if category_rows:
-        values = [str(decode_json(row[0])) for row in category_rows if decode_json(row[0])]
+        values = [str(row["value"]) for row in category_rows if row["value"]]
         if values:
             common, occurrences = Counter(values).most_common(1)[0]
-            quality = sum(quality_confidence(float(row[2] or 0), float(row[3] or 0), float(row[4] or 0)) for row in category_rows) / len(category_rows)
-            confidence = quality * (occurrences / len(values))
-            fact = Fact("organization.category", common, "present", confidence, [row[1] for row in category_rows if str(decode_json(row[0])) == common])
+            matching = [row for row in category_rows if str(row["value"]) == common]
+            quality = sum(float(row["quality"]) for row in matching) / len(matching)
+            agreement = occurrences / len(values)
+            confidence = quality * agreement * organization_confidence
+            fact = Fact("organization.category", common, "present", confidence,
+                        [row["evidence_id"] for row in matching])
             facts[fact.predicate] = fact
             _write_fact(con, representative, fact, "organization_aggregate_v0.3")
 
-    categories_rows = con.execute(
-        f"""SELECT value_json, evidence_id FROM evidence WHERE business_id IN ({placeholders})
-            AND is_active = true AND predicate = 'organization.categories'""",
-        members,
-    ).fetchall()
+    categories_rows = _latest_business_rows(con, members, "organization.categories")
     categories: set[str] = set()
     category_evidence: list[str] = []
-    for value_json, evidence_id in categories_rows:
-        value = decode_json(value_json)
+    qualities: list[float] = []
+    for row in categories_rows:
+        value = row["value"]
         if isinstance(value, list):
             categories.update(str(item) for item in value if item)
-            category_evidence.append(evidence_id)
+            category_evidence.append(row["evidence_id"])
+            qualities.append(float(row["quality"]))
     if categories:
-        fact = Fact("organization.categories", sorted(categories), "present", 0.90, category_evidence)
+        coverage = len(categories_rows) / len(members)
+        confidence = (sum(qualities) / len(qualities)) * coverage * organization_confidence if qualities else 0.0
+        fact = Fact("organization.categories", sorted(categories), "present", confidence, category_evidence)
         facts[fact.predicate] = fact
         _write_fact(con, representative, fact, "organization_aggregate_v0.3")
 
-    _aggregate_reputation(con, representative, members, facts)
+    _aggregate_reputation(con, representative, members, facts, organization_confidence)
     return facts, organization_id, members
 
 
