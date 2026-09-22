@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .config import project_paths
 from .db import Database
+from .prospect.identity import resolve_organizations
 from .prospect.pipeline import evaluate_all, ingest_maps
 from .prospect.report import latest_business_report, render_json, render_text
 from .prospect.web_pipeline import enrich_websites
@@ -36,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     _common(enrich)
     _web_options(enrich)
 
-    evaluate = sub.add_parser("evaluate", help="Resolve evidence, derive signals, and evaluate services/channels")
+    resolve = sub.add_parser("resolve-entities", help="Group branch/listing entities into evidence-backed organizations")
+    _common(resolve)
+
+    evaluate = sub.add_parser("evaluate", help="Resolve entities/evidence, derive signals, and evaluate services/channels")
     _common(evaluate)
     evaluate.add_argument("--business-id")
 
@@ -72,7 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ingest-maps":
         db.initialize(paths.schema)
         stats = ingest_maps(db, paths, args.source)
-        print(f"Ingested {stats['records']} record(s), {stats['businesses']} business(es), {stats['evidence']} new evidence item(s)")
+        print(
+            f"Ingested {stats['records']} record(s), {stats['businesses']} listing entity/entities, "
+            f"{stats['evidence']} new evidence item(s), {stats['reviews']} normalized review(s)"
+        )
         return 0
     if args.command == "enrich-web":
         db.initialize(paths.schema)
@@ -83,10 +90,18 @@ def main(argv: list[str] | None = None) -> int:
             f"{stats['robots_skipped']} robots skip(s), {stats['errors']} error(s)"
         )
         return 0
+    if args.command == "resolve-entities":
+        db.initialize(paths.schema)
+        stats = resolve_organizations(db)
+        print(
+            f"Resolved {stats['businesses']} listing entity/entities into {stats['organizations']} organization(s); "
+            f"{stats['linked_edges']} linked edge(s), {stats['candidate_edges']} candidate edge(s)"
+        )
+        return 0
     if args.command == "evaluate":
         db.initialize(paths.schema)
         results = evaluate_all(db, paths, args.business_id)
-        print(f"Evaluated {len(results)} business(es)")
+        print(f"Evaluated {len(results)} organization(s)")
         return 0
     if args.command == "show":
         reports = latest_business_report(db, args.business_id)
@@ -100,6 +115,6 @@ def main(argv: list[str] | None = None) -> int:
         evaluate_all(db, paths)
         reports = latest_business_report(db)
         print(render_json(reports) if args.as_json else render_text(reports), end="")
-        print(f"Processed {stats['records']} input record(s)")
+        print(f"Processed {stats['records']} input record(s), including {stats['reviews']} normalized review(s)")
         return 0
     return 2
