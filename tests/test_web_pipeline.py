@@ -80,4 +80,4 @@ def test_website_enrichment_flows_into_profile_and_channel_evaluation(tmp_path: 
 
     whatsapp = next(item for item in report["channels"] if item["channel_id"] == "whatsapp")
     assert whatsapp["suitability"] is not None
-    assert "whatsapp_presence" in whatsapp["positive_factors"]
+    assert "contact.whatsapp.state" in whatsapp["positive_factors"]
