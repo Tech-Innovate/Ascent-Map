@@ -70,7 +70,13 @@ def test_website_enrichment_flows_into_profile_and_channel_evaluation(tmp_path: 
     assert facts["contact.form.state"]["value"] == "present"
     assert facts["website.booking_present"]["value"] is True
     assert facts["digital.multilingual"]["value"] is True
+
     assert signals["whatsapp_presence"]["value"] == "present"
+    assert signals["contact_form_presence"]["value"] == "present"
+    assert signals["social_messaging_presence"]["state"] == "present"
+    assert signals["online_booking"]["value"] is True
+    assert signals["multilingual_digital_presence"]["state"] == "present"
+    assert signals["digital_maturity"]["state"] == "present"
 
     whatsapp = next(item for item in report["channels"] if item["channel_id"] == "whatsapp")
     assert whatsapp["suitability"] is not None
