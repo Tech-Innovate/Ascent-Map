@@ -9,7 +9,7 @@ from ascent_map.config import ProjectPaths
 from ascent_map.db import Database, decode_json
 
 from .ingest import json_value, stable_id, utc_now, value_type, website_domain
-from .web import WebEvidence, WebFetch, analyze_html, decode_html, fetch_website, robots_allowed
+from .web import WebEvidence, WebFetch, analyze_html, decode_html, fetch_website, robots_allowed, validate_public_url
 
 
 def _website_targets(con, business_id: str | None = None) -> list[tuple[str, str]]:
@@ -126,8 +126,20 @@ def enrich_websites(
         if not domain:
             stats["errors"] += 1
             continue
-        source_entity_id = stable_id("src", "official_website", "domain", domain)
         root_source_url = website_url if "://" in website_url else f"https://{website_url}"
+        # Validate the root even when a custom fetcher is injected. This keeps
+        # the acquisition boundary independent from the HTTP implementation.
+        try:
+            validate_public_url(root_source_url)
+        except ValueError:
+            # Tests and fully offline adapters may intentionally use the .invalid
+            # TLD; allow that reserved documentation suffix only when a custom
+            # fetcher is supplied. Production/default fetches still reject it.
+            if fetcher is fetch_website or not domain.endswith(".invalid"):
+                stats["errors"] += 1
+                continue
+
+        source_entity_id = stable_id("src", "official_website", "domain", domain)
         with db.connect() as con:
             con.execute(
                 """INSERT INTO source_entity
